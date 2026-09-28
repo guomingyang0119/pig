@@ -1,0 +1,501 @@
+{
+  "name": "贵州风管报价指标",
+  "company_id": "guizhou",
+  "source": "产品基价.xlsx / 已确认风管规则（2026-09-22）",
+  "effective_from": "2026-09-22",
+  "effective_to": "",
+  "materials": [
+    {
+      "name": "40g锌层镀锌板 0.5mm",
+      "material": "galvanized_40",
+      "thickness": "0.5",
+      "ton_price": "3815",
+      "unit": "元/吨",
+      "source_cell": "风管类!E2"
+    },
+    {
+      "name": "40g锌层镀锌板 0.6mm",
+      "material": "galvanized_40",
+      "thickness": "0.6",
+      "ton_price": "3770",
+      "unit": "元/吨",
+      "source_cell": "风管类!E3"
+    },
+    {
+      "name": "40g锌层镀锌板 0.75mm",
+      "material": "galvanized_40",
+      "thickness": "0.75",
+      "ton_price": "3725",
+      "unit": "元/吨",
+      "source_cell": "风管类!E4"
+    },
+    {
+      "name": "40g锌层镀锌板 1mm",
+      "material": "galvanized_40",
+      "thickness": "1",
+      "ton_price": "3680",
+      "unit": "元/吨",
+      "source_cell": "风管类!E5"
+    },
+    {
+      "name": "40g锌层镀锌板 1.2mm",
+      "material": "galvanized_40",
+      "thickness": "1.2",
+      "ton_price": "3680",
+      "unit": "元/吨",
+      "source_cell": "风管类!E6"
+    },
+    {
+      "name": "40g锌层镀锌板 1.5mm",
+      "material": "galvanized_40",
+      "thickness": "1.5",
+      "ton_price": "3680",
+      "unit": "元/吨",
+      "source_cell": "风管类!E7"
+    },
+    {
+      "name": "80g锌层镀锌板 0.5mm",
+      "material": "galvanized_80",
+      "thickness": "0.5",
+      "ton_price": "4627.6",
+      "unit": "元/吨",
+      "source_cell": "风管类!E8"
+    },
+    {
+      "name": "80g锌层镀锌板 0.6mm",
+      "material": "galvanized_80",
+      "thickness": "0.6",
+      "ton_price": "4379.2",
+      "unit": "元/吨",
+      "source_cell": "风管类!E9"
+    },
+    {
+      "name": "80g锌层镀锌板 0.75mm",
+      "material": "galvanized_80",
+      "thickness": "0.75",
+      "ton_price": "4149.2",
+      "unit": "元/吨",
+      "source_cell": "风管类!E10"
+    },
+    {
+      "name": "80g锌层镀锌板 1mm",
+      "material": "galvanized_80",
+      "thickness": "1",
+      "ton_price": "4002",
+      "unit": "元/吨",
+      "source_cell": "风管类!E11"
+    },
+    {
+      "name": "80g锌层镀锌板 1.2mm",
+      "material": "galvanized_80",
+      "thickness": "1.2",
+      "ton_price": "4002",
+      "unit": "元/吨",
+      "source_cell": "风管类!E12"
+    },
+    {
+      "name": "80g锌层镀锌板 1.5mm",
+      "material": "galvanized_80",
+      "thickness": "1.5",
+      "ton_price": "4002",
+      "unit": "元/吨",
+      "source_cell": "风管类!E13"
+    },
+    {
+      "name": "201不锈钢 0.5mm",
+      "material": "stainless_201",
+      "thickness": "0.5",
+      "ton_price": "8094",
+      "unit": "元/吨",
+      "source_cell": "风管类!E14"
+    },
+    {
+      "name": "201不锈钢 0.6mm",
+      "material": "stainless_201",
+      "thickness": "0.6",
+      "ton_price": "8094",
+      "unit": "元/吨",
+      "source_cell": "风管类!E15"
+    },
+    {
+      "name": "201不锈钢 0.75mm",
+      "material": "stainless_201",
+      "thickness": "0.75",
+      "ton_price": "8094",
+      "unit": "元/吨",
+      "source_cell": "风管类!E16"
+    },
+    {
+      "name": "201不锈钢 1mm",
+      "material": "stainless_201",
+      "thickness": "1",
+      "ton_price": "7544",
+      "unit": "元/吨",
+      "source_cell": "风管类!E17"
+    },
+    {
+      "name": "201不锈钢 1.2mm",
+      "material": "stainless_201",
+      "thickness": "1.2",
+      "ton_price": "7544",
+      "unit": "元/吨",
+      "source_cell": "风管类!E18"
+    },
+    {
+      "name": "201不锈钢 1.5mm",
+      "material": "stainless_201",
+      "thickness": "1.5",
+      "ton_price": "7544",
+      "unit": "元/吨",
+      "source_cell": "风管类!E19"
+    },
+    {
+      "name": "304不锈钢 0.5mm",
+      "material": "stainless_304",
+      "thickness": "0.5",
+      "ton_price": "14994",
+      "unit": "元/吨",
+      "source_cell": "风管类!E20"
+    },
+    {
+      "name": "304不锈钢 0.6mm",
+      "material": "stainless_304",
+      "thickness": "0.6",
+      "ton_price": "14994",
+      "unit": "元/吨",
+      "source_cell": "风管类!E21"
+    },
+    {
+      "name": "304不锈钢 0.75mm",
+      "material": "stainless_304",
+      "thickness": "0.75",
+      "ton_price": "14994",
+      "unit": "元/吨",
+      "source_cell": "风管类!E22"
+    },
+    {
+      "name": "304不锈钢 1mm",
+      "material": "stainless_304",
+      "thickness": "1",
+      "ton_price": "14444",
+      "unit": "元/吨",
+      "source_cell": "风管类!E23"
+    },
+    {
+      "name": "304不锈钢 1.2mm",
+      "material": "stainless_304",
+      "thickness": "1.2",
+      "ton_price": "14444",
+      "unit": "元/吨",
+      "source_cell": "风管类!E24"
+    },
+    {
+      "name": "304不锈钢 1.5mm",
+      "material": "stainless_304",
+      "thickness": "1.5",
+      "ton_price": "14444",
+      "unit": "元/吨",
+      "source_cell": "风管类!E25"
+    },
+    {
+      "name": "40g镀锌板 2.0mm",
+      "material": "galvanized_40",
+      "thickness": "2.0",
+      "ton_price": "3680",
+      "unit": "元/吨",
+      "source_cell": "用户确认补充：2026-09-19"
+    },
+    {
+      "name": "80g镀锌板 2.0mm",
+      "material": "galvanized_80",
+      "thickness": "2.0",
+      "ton_price": "4002",
+      "unit": "元/吨",
+      "source_cell": "用户确认补充：2026-09-19"
+    },
+    {
+      "name": "201不锈钢 2.0mm",
+      "material": "stainless_201",
+      "thickness": "2.0",
+      "ton_price": "7544",
+      "unit": "元/吨",
+      "source_cell": "用户确认补充：2026-09-19"
+    },
+    {
+      "name": "304不锈钢 2.0mm",
+      "material": "stainless_304",
+      "thickness": "2.0",
+      "ton_price": "14444",
+      "unit": "元/吨",
+      "source_cell": "用户确认补充：2026-09-19"
+    }
+  ],
+  "flanges": [
+    {
+      "name": "30黑角铁法兰 计算档位5.5",
+      "material": "black",
+      "size": 30,
+      "grade": "5.5",
+      "ton_price": "3358",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C38:E38"
+    },
+    {
+      "name": "30黑角铁法兰 计算档位6.5",
+      "material": "black",
+      "size": 30,
+      "grade": "6.5",
+      "ton_price": "3358",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C39:E39"
+    },
+    {
+      "name": "30黑角铁法兰 计算档位7.5",
+      "material": "black",
+      "size": 30,
+      "grade": "7.5",
+      "ton_price": "3358",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C40:E40"
+    },
+    {
+      "name": "30黑角铁法兰 计算档位8.5",
+      "material": "black",
+      "size": 30,
+      "grade": "8.5",
+      "ton_price": "3339.6",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C41:E41"
+    },
+    {
+      "name": "40黑角铁法兰 计算档位9.5",
+      "material": "black",
+      "size": 40,
+      "grade": "9.5",
+      "ton_price": "3339.6",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C42:E42"
+    },
+    {
+      "name": "40黑角铁法兰 计算档位10.5",
+      "material": "black",
+      "size": 40,
+      "grade": "10.5",
+      "ton_price": "3339.6",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C43:E43"
+    },
+    {
+      "name": "40黑角铁法兰 计算档位11.5",
+      "material": "black",
+      "size": 40,
+      "grade": "11.5",
+      "ton_price": "3339.6",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C44:E44"
+    },
+    {
+      "name": "40黑角铁法兰 计算档位12.5",
+      "material": "black",
+      "size": 40,
+      "grade": "12.5",
+      "ton_price": "3321.2",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C45:E45"
+    },
+    {
+      "name": "40黑角铁法兰 计算档位14.5",
+      "material": "black",
+      "size": 40,
+      "grade": "14.5",
+      "ton_price": "3321.2",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C46:E46"
+    },
+    {
+      "name": "30热镀锌角铁法兰 计算档位6.5",
+      "material": "hot_galvanized",
+      "size": 30,
+      "grade": "6.5",
+      "ton_price": "4094",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C47:E47"
+    },
+    {
+      "name": "30热镀锌角铁法兰 计算档位7.5",
+      "material": "hot_galvanized",
+      "size": 30,
+      "grade": "7.5",
+      "ton_price": "4048",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C48:E48"
+    },
+    {
+      "name": "30热镀锌角铁法兰 计算档位8.5",
+      "material": "hot_galvanized",
+      "size": 30,
+      "grade": "8.5",
+      "ton_price": "4048",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C49:E49"
+    },
+    {
+      "name": "40热镀锌角铁法兰 计算档位11.5",
+      "material": "hot_galvanized",
+      "size": 40,
+      "grade": "11.5",
+      "ton_price": "3864",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C50:E50"
+    },
+    {
+      "name": "40热镀锌角铁法兰 计算档位12.5",
+      "material": "hot_galvanized",
+      "size": 40,
+      "grade": "12.5",
+      "ton_price": "3864",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C51:E51"
+    },
+    {
+      "name": "40热镀锌角铁法兰 计算档位13.5",
+      "material": "hot_galvanized",
+      "size": 40,
+      "grade": "13.5",
+      "ton_price": "3864",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C52:E52"
+    },
+    {
+      "name": "40热镀锌角铁法兰 计算档位14.5",
+      "material": "hot_galvanized",
+      "size": 40,
+      "grade": "14.5",
+      "ton_price": "3864",
+      "processing_per_m": "3",
+      "unit": "元/米",
+      "source_cell": "风管类!C53:E53"
+    },
+    {
+      "name": "50热镀锌角铁法兰 计算档位19.5",
+      "material": "hot_galvanized",
+      "size": 50,
+      "grade": "19.5",
+      "ton_price": "3588",
+      "processing_per_m": "5",
+      "unit": "元/米",
+      "source_cell": "风管类!C54:E54"
+    },
+    {
+      "name": "50热镀锌角铁法兰 计算档位21.5",
+      "material": "hot_galvanized",
+      "size": 50,
+      "grade": "21.5",
+      "ton_price": "3588",
+      "processing_per_m": "5",
+      "unit": "元/米",
+      "source_cell": "风管类!C55:E55"
+    }
+  ],
+  "rates": {
+    "density_galvanized": "7.85",
+    "density_stainless": "7.93",
+    "galvanized_semi": "4",
+    "galvanized_straight": "3",
+    "galvanized_irregular": "6",
+    "galvanized_1_5_straight": "4.5",
+    "galvanized_1_5_irregular": "7.5",
+    "galvanized_1_5_unspecified": "5.5",
+    "galvanized_narrow_extra": "3",
+    "stainless_semi": "12",
+    "stainless_straight": "10",
+    "stainless_irregular": "15",
+    "closing_common": "6",
+    "closing_angle": "10",
+    "closing_round": "20",
+    "closing_0_5_extra": "5",
+    "accessory_per_sqm": "2",
+    "corner_unit_price": "0.3",
+    "clip_per_meter_price": "3",
+    "common_punch": "1",
+    "freight_per_sqm": "1",
+    "net_galvanized_common": "1.17",
+    "net_galvanized_angle": "1.14",
+    "net_stainless": "1.15",
+    "net_round": "1.17",
+    "material_tax_factor": "1.1",
+    "installation_tax_factor": "1.01",
+    "flange_area_factor": "1.72"
+  },
+  "expressions": {
+    "material_price": "thickness * density * 0.001 * ton_price",
+    "body_sale": "(material_price + processing + closing + accessory_per_sqm) * area_factor",
+    "flange_per_meter": "flange_grade * ton_price / 1000 / 6 + flange_processing",
+    "flange_per_area": "flange_per_meter * flange_area_factor"
+  },
+  "payment_terms": [
+    {
+      "code": "no_install_cash",
+      "mode": "no_install",
+      "label": "现金",
+      "coefficient": "1.00"
+    },
+    {
+      "code": "no_install_days_7",
+      "mode": "no_install",
+      "label": "付款周期≤7天",
+      "coefficient": "1.04"
+    },
+    {
+      "code": "no_install_days_15",
+      "mode": "no_install",
+      "label": "付款周期7—15天（不含7天，含15天）",
+      "coefficient": "1.05"
+    },
+    {
+      "code": "no_install_days_30",
+      "mode": "no_install",
+      "label": "付款周期15—30天（不含15天，含30天）",
+      "coefficient": "1.06"
+    },
+    {
+      "code": "no_install_days_45",
+      "mode": "no_install",
+      "label": "付款周期30—45天（不含30天，含45天）",
+      "coefficient": "1.07"
+    },
+    {
+      "code": "with_install_cash",
+      "mode": "with_install",
+      "label": "现金支付（一次性全部付清）",
+      "coefficient": "1.00"
+    },
+    {
+      "code": "with_install_progress_70",
+      "mode": "with_install",
+      "label": "付款进度70%",
+      "coefficient": "1.20"
+    },
+    {
+      "code": "with_install_progress_80",
+      "mode": "with_install",
+      "label": "付款进度80%",
+      "coefficient": "1.10"
+    }
+  ]
+}

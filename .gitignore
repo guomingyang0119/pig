@@ -59,6 +59,7 @@ Servers
 upload
 gen_code
 application-preview.yml
+/work/local/
 
 ### node ###
 node_modules

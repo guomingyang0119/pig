@@ -1,0 +1,48 @@
+def suggest_auto_mapping(sheet):
+    """Merge explicit duct/equipment headers without resolving ambiguities by guesswork."""
+    duct = suggest_duct_mapping(sheet)
+    equipment = suggest_equipment_mapping(sheet)
+    mapping = {}
+    for key in set(duct["mapping"]) | set(equipment["mapping"]):
+        values = {candidate[key] for candidate in (duct["mapping"], equipment["mapping"]) if key in candidate}
+        if len(values) == 1:
+            mapping[key] = values.pop()
+
+    # A single customer column often means both duct engineering quantity and
+    # equipment quantity. Keep one mapping and route its value after row type
+    # recognition, otherwise the generic duplicate-column guard would reject it.
+    if mapping.get("quantity") is not None and mapping.get("quantity") == mapping.get("engineering_quantity"):
+        mapping.pop("quantity")
+
+    starts = {value for value in (duct["start_row"], equipment["start_row"]) if value is not None}
+    start_row = starts.pop() if len(starts) == 1 else None
+    return {"mapping": mapping, "start_row": start_row}
+
+def auto_classify_row(row):
+    """Classify only deterministic product names; unknown rows deliberately stay pending."""
+    explicit = str(row.get("category") or "").strip()
+    text = " ".join(str(row.get(key) or "") for key in ("name", "spec", "remark"))
+    if explicit not in {"", "风管"}:
+        pass
+    else:
+        from .equipment import classify
+        kind = classify({**row, "category": ""})
+        recognized = (
+            "风机" if kind == "fan" else
+            "风阀" if kind in {"fire", "electric_fire", "electric_control", "manual", "check",
+                                     "pressure_relief", "multi_leaf", "plate_smoke"} else
+            "百叶风口" if kind == "louver" else
+            "消声设备" if kind in {"elbow", "plenum", "silencer"} else
+            "外购设备" if kind == "purchased" else
+            ""
+        )
+        row["category"] = recognized or ("风管" if "风管" in text else "")
+
+    area_units = {"㎡", "m2", "m²", "平方米"}
+    item_units = {"台", "个", "只", "套", "件", "组", "樘"}
+    unit = str(row.get("unit", "")).strip()
+    if not row.get("engineering_quantity") and row.get("quantity") and unit in area_units:
+        row["engineering_quantity"] = row["quantity"]
+    if not row.get("quantity") and row.get("engineering_quantity") and unit in item_units:
+        row["quantity"] = row["engineering_quantity"]
+    return row

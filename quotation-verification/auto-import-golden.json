@@ -1,0 +1,3295 @@
+{
+  "reference_sha256": "085156b0966f6d272b680cbdd56489188c7bbcf239e295852f36b5f8e8419bd0",
+  "rows": [
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "风管防火阀",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "风管防火阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "风管防火阀",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "风管防火阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "风管防火阀",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "风管防火阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "风管防火阀",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "风管防火阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "风管防火阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "风管防火阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "风管防火阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "风管防火阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "防火阀",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "防火阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "防火阀",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "防火阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "防火阀",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "防火阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "防火阀",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "防火阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "防火阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "防火阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "防火阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "防火阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动防火阀",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动防火阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动防火阀",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动防火阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动防火阀",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动防火阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动防火阀",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动防火阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动防火阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动防火阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动防火阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动防火阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动调节阀",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动调节阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动调节阀",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动调节阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动调节阀",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动调节阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动调节阀",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动调节阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动调节阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动调节阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "电动调节阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "电动调节阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "手动调节阀",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "手动调节阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "手动调节阀",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "手动调节阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "手动调节阀",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "手动调节阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "手动调节阀",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "手动调节阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "手动调节阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "手动调节阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "手动调节阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "手动调节阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "止回阀",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "止回阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "止回阀",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "止回阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "止回阀",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "止回阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "止回阀",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "止回阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "止回阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "止回阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "止回阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "止回阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "余压阀",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "余压阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "余压阀",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "余压阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "余压阀",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "余压阀",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "余压阀",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "余压阀",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "余压阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "余压阀",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "余压阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "余压阀",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "多叶排烟口",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "多叶排烟口",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "多叶排烟口",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "多叶排烟口",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "多叶排烟口",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "多叶排烟口",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "多叶排烟口",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "多叶排烟口",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "多叶排烟口",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "多叶排烟口",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "多叶排烟口",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "多叶排烟口",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "板式排烟口",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "板式排烟口",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "板式排烟口",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "板式排烟口",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "板式排烟口",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "板式排烟口",
+        "category": "风阀",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "板式排烟口",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "板式排烟口",
+        "category": "风阀",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "板式排烟口",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "板式排烟口",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "板式排烟口",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "板式排烟口",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "百叶风口",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "百叶风口",
+        "category": "百叶风口",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "百叶风口",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "百叶风口",
+        "category": "百叶风口",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "百叶风口",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "百叶风口",
+        "category": "百叶风口",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "百叶风口",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "百叶风口",
+        "category": "百叶风口",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "百叶风口",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "百叶风口",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "百叶风口",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "百叶风口",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声器",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声器",
+        "category": "消声设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声器",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声器",
+        "category": "消声设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声器",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声器",
+        "category": "消声设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声器",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声器",
+        "category": "消声设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声器",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声器",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声器",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声器",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "静压箱",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "静压箱",
+        "category": "消声设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "静压箱",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "静压箱",
+        "category": "消声设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "静压箱",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "静压箱",
+        "category": "消声设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "静压箱",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "静压箱",
+        "category": "消声设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "静压箱",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "静压箱",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "静压箱",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "静压箱",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声弯头",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声弯头",
+        "category": "消声设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声弯头",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声弯头",
+        "category": "消声设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声弯头",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声弯头",
+        "category": "消声设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声弯头",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声弯头",
+        "category": "消声设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声弯头",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声弯头",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "消声弯头",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "消声弯头",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "壁式轴流风机",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "壁式轴流风机",
+        "category": "风机",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "壁式轴流风机",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "壁式轴流风机",
+        "category": "风机",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "壁式轴流风机",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "壁式轴流风机",
+        "category": "风机",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "壁式轴流风机",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "壁式轴流风机",
+        "category": "风机",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "壁式轴流风机",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "壁式轴流风机",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "壁式轴流风机",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "壁式轴流风机",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "换气扇",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "换气扇",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "换气扇",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "换气扇",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "换气扇",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "换气扇",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "换气扇",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "换气扇",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "换气扇",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "换气扇",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "换气扇",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "换气扇",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "未知材料",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "未知材料",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "未知材料",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "未知材料",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "未知材料",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "未知材料",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "未知材料",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "未知材料",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "未知材料",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "未知材料",
+        "category": "外购设备",
+        "unit": "㎡",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "未知材料",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      },
+      "expected": {
+        "name": "未知材料",
+        "category": "外购设备",
+        "unit": "个",
+        "engineering_quantity": "2.5",
+        "quantity": "2.5",
+        "attributes": {},
+        "row_id": "source-row",
+        "source_row": 3,
+        "installation": {
+          "unit_price": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "㎡",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "㎡",
+        "engineering_quantity": "12",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "m2",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "m2",
+        "engineering_quantity": "12",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "m²",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "m²",
+        "engineering_quantity": "12",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "平方米",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "平方米",
+        "engineering_quantity": "12",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "台",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "台",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "个",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "个",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "只",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "只",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "套",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "套",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "件",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "件",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "组",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "组",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "樘",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "樘",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "吨",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "吨",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    },
+    {
+      "input": {
+        "name": "镀锌风管",
+        "category": "",
+        "unit": "",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      },
+      "expected": {
+        "name": "镀锌风管",
+        "category": "风管",
+        "unit": "",
+        "engineering_quantity": "",
+        "quantity": "12",
+        "attributes": {}
+      }
+    }
+  ],
+  "sheets": [
+    {
+      "input": {
+        "name": "清单",
+        "rows": [
+          {
+            "number": 1,
+            "cells": [
+              "产品名称",
+              "规格型号",
+              "工程量",
+              "单位"
+            ],
+            "issues": []
+          }
+        ]
+      },
+      "expected": {
+        "mapping": {
+          "spec": 1,
+          "name": 0,
+          "unit": 3,
+          "engineering_quantity": 2
+        },
+        "start_row": 2
+      }
+    },
+    {
+      "input": {
+        "name": "清单",
+        "rows": [
+          {
+            "number": 1,
+            "cells": [
+              "材料名称",
+              "规格",
+              "数量",
+              "计量单位"
+            ],
+            "issues": []
+          }
+        ]
+      },
+      "expected": {
+        "mapping": {
+          "spec": 1,
+          "unit": 3,
+          "name": 0,
+          "quantity": 2
+        },
+        "start_row": 2
+      }
+    },
+    {
+      "input": {
+        "name": "清单",
+        "rows": [
+          {
+            "number": 1,
+            "cells": [
+              "产品名称",
+              "规格描述",
+              "规格型号",
+              "工程量",
+              "数量",
+              "单位"
+            ],
+            "issues": []
+          }
+        ]
+      },
+      "expected": {
+        "mapping": {
+          "spec": 1,
+          "name": 0,
+          "unit": 5,
+          "model": 2,
+          "quantity": 4,
+          "engineering_quantity": 3
+        },
+        "start_row": 2
+      }
+    },
+    {
+      "input": {
+        "name": "清单",
+        "rows": [
+          {
+            "number": 1,
+            "cells": [
+              "设备名称",
+              "规格型号",
+              "数量",
+              "功率(kW)",
+              "单位"
+            ],
+            "issues": []
+          }
+        ]
+      },
+      "expected": {
+        "mapping": {
+          "spec": 1,
+          "power": 3,
+          "unit": 4,
+          "name": 0,
+          "quantity": 2
+        },
+        "start_row": 2
+      }
+    },
+    {
+      "input": {
+        "name": "清单",
+        "rows": [
+          {
+            "number": 1,
+            "cells": [
+              "产品名称",
+              "规格",
+              "规格描述",
+              "单位"
+            ],
+            "issues": []
+          }
+        ]
+      },
+      "expected": {
+        "mapping": {
+          "unit": 3,
+          "name": 0
+        },
+        "start_row": 2
+      }
+    },
+    {
+      "input": {
+        "name": "清单",
+        "rows": [
+          {
+            "number": 1,
+            "cells": [
+              "产品名称",
+              "产品名称",
+              "工程量"
+            ],
+            "issues": []
+          }
+        ]
+      },
+      "expected": {
+        "mapping": {},
+        "start_row": null
+      }
+    },
+    {
+      "input": {
+        "name": "清单",
+        "rows": [
+          {
+            "number": 1,
+            "cells": [
+              "项目名称",
+              "工程量（㎡）",
+              "圆法兰数量",
+              "备注"
+            ],
+            "issues": []
+          }
+        ]
+      },
+      "expected": {
+        "mapping": {
+          "remark": 3,
+          "round_flange_count": 2,
+          "name": 0,
+          "engineering_quantity": 1
+        },
+        "start_row": 2
+      }
+    },
+    {
+      "input": {
+        "name": "清单",
+        "rows": [
+          {
+            "number": 1,
+            "cells": [
+              "无可识别表头"
+            ],
+            "issues": []
+          }
+        ]
+      },
+      "expected": {
+        "mapping": {},
+        "start_row": null
+      }
+    }
+  ]
+}

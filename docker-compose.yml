@@ -26,6 +26,8 @@ services:
   pig-register:
     build:
       context: ./pig-register
+    environment:
+      MYSQL_HOST: pig-mysql
     restart: always
     container_name: pig-register
     image: pig-register

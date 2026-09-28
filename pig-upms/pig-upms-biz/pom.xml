@@ -33,6 +33,12 @@
     <description>pig 通用用户权限管理系统业务处理模块</description>
 
     <dependencies>
+        <!-- 报价业务事务测试使用隔离内存库，不连接运行环境数据库 -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- mysql -->
         <dependency>
             <groupId>com.mysql</groupId>

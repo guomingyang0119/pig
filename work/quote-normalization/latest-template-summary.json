@@ -1,0 +1,43 @@
+{
+  "template": "C:/Users/HONOR/Desktop/统一报价输入模板-20260926.xlsx",
+  "outputDir": "D:/pig/outputs/01a0e0b5-9334-7b43-8a43-3c56deacc813/真实客户清单整理-最新版模板-20260927",
+  "outputs": [
+    "D:/pig/outputs/01a0e0b5-9334-7b43-8a43-3c56deacc813/真实客户清单整理-最新版模板-20260927/01-马板变电站-统一报价输入.xlsx",
+    "D:/pig/outputs/01a0e0b5-9334-7b43-8a43-3c56deacc813/真实客户清单整理-最新版模板-20260927/02-暖通询价单-统一报价输入.xlsx",
+    "D:/pig/outputs/01a0e0b5-9334-7b43-8a43-3c56deacc813/真实客户清单整理-最新版模板-20260927/03-皮洛遗址保护利用项目-统一报价输入.xlsx",
+    "D:/pig/outputs/01a0e0b5-9334-7b43-8a43-3c56deacc813/真实客户清单整理-最新版模板-20260927/04-梧州光荣项目-统一报价输入.xlsx",
+    "D:/pig/outputs/01a0e0b5-9334-7b43-8a43-3c56deacc813/真实客户清单整理-最新版模板-20260927/05-正安项目-统一报价输入.xlsx"
+  ],
+  "counts": [
+    {
+      "file": "马板变电站通风报价单.xlsx",
+      "supported": 62,
+      "pending": 2
+    },
+    {
+      "file": "暖通询价单.xls",
+      "supported": 149,
+      "pending": 82
+    },
+    {
+      "file": "皮洛遗址保护利用项目-暖通.xlsx",
+      "supported": 119,
+      "pending": 111
+    },
+    {
+      "file": "睿亿泰净化医疗+科庆通风-9-4-单价合同(6).xlsx",
+      "supported": 0,
+      "pending": 6
+    },
+    {
+      "file": "梧州光荣项目辉业 9.11.xls",
+      "supported": 35,
+      "pending": 123
+    },
+    {
+      "file": "正安报价(1)1.xlsx",
+      "supported": 4,
+      "pending": 3
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+// Run with PLAYWRIGHT_MODULE pointing to an installed playwright package, or local playwright.
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const out = path.join(__dirname, 'test-output');
+fs.mkdirSync(out, { recursive: true });
+const base = 'http://127.0.0.1:18763';
+async function api(p, method='GET', data) {
+	const r = await fetch(base + '/admin/quotation' + p, { method, headers: { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data) });
+	const j = await r.json(); assert.equal(r.status, 200, JSON.stringify(j)); return j.data;
+}
+(async()=>{
+	const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge' });
+	const page = await browser.newPage({ viewport: { width: 1512, height: 1080 }, acceptDownloads: true });
+	const errors = []; page.on('pageerror', e=>errors.push(e.message));
+	const button = name=>page.getByRole('button', {name,exact:true});
+	const field = label=>page.locator('main.quotation-page .el-form-item').filter({ has: page.locator('.el-form-item__label').getByText(label, {exact:true}) });
+	const choose = async(label, option)=>{ await field(label).locator('.el-select').click(); await page.getByRole('option',{name:option,exact:true}).click(); };
+	try {
+		await page.goto(base);
+		await page.getByRole('link', {name:'指标管理',exact:true}).click();
+		if ((await api('/resources')).length === 0) { await button('初始化基价草稿').click(); await button('校验指标').waitFor(); }
+		if ((await api('/resources')).some(c=>c.status==='draft')) {
+			await button('校验指标').click(); await page.getByText('指标结构、价格、公式和付款方案校验通过',{exact:true}).waitFor();
+			await button('发布指标').click(); await button('确定').click();
+		}
+		await button('创建新版本').waitFor();
+		await page.screenshot({path:path.join(out,'指标管理.png'),fullPage:true});
+		await page.getByRole('link',{name:'报价工作台',exact:true}).click();
+		await button('新建风管报价').click(); await button('保存并试算').waitFor();
+		await field('客户名称').getByRole('textbox').fill('迁移验收客户');
+		await field('项目名称').getByRole('textbox').fill('贵阳风管 · Java 验收');
+		await choose('面积结算口径 · 必选','净面积');
+		await choose('成品状态 · 必选','半成品');
+		await choose('管件类型','直管');
+		await choose('法兰形式 · 必选','角钢法兰');
+		await choose('报价含税口径 · 必选','不含税');
+		await button('＋ 添加项目').click();
+		const drawer=page.getByRole('dialog');
+		await drawer.locator('.el-form-item').filter({hasText:'产品名称'}).getByRole('textbox').fill('镀锌风管');
+		await drawer.locator('.el-form-item').filter({hasText:'工程量总面积（㎡）'}).getByRole('textbox').fill('100');
+		await drawer.locator('.el-form-item').filter({hasText:'厚度（mm）'}).getByRole('textbox').fill('0.75');
+		await drawer.locator('.el-form-item').filter({hasText:'尺寸 / 型号'}).getByRole('textbox').fill('800×320');
+		await button('完成核对').click();
+		await button('保存并试算').click();
+		await page.getByText('试算完成，请核对待确认项',{exact:true}).waitFor();
+		assert.equal(await button('生成正式报价').isDisabled(),true,'payment cannot silently default');
+		await page.getByRole('radio',{name:'现金 系数 × 1.00',exact:true}).click();
+		await button('保存并试算').click();
+		await page.getByText('试算完成，可以生成正式报价',{exact:true}).waitFor();
+		const id = new URL(page.url()).searchParams.get('id');
+		let q=await api('/quotes/'+id);
+		assert.equal(q.result.total,'4250.0');
+		await page.waitForFunction(()=>!document.querySelector('.el-message'));
+		await page.screenshot({path:path.join(out,'报价工作台.png'),fullPage:true});
+		await button('参数 / 明细').click();
+		await page.getByText('上次计算过程',{exact:true}).waitFor();
+		await page.screenshot({path:path.join(out,'逐行计算明细.png'),fullPage:true});
+		await button('完成核对').click();
+		const draft=page.waitForEvent('download');await button('导出 Excel 草稿').click();
+		await (await draft).saveAs(path.join(out,'浏览器-草稿.xlsx'));
+		const formal=page.waitForEvent('download');await button('生成正式报价').click();await button('确定').click();
+		await (await formal).saveAs(path.join(out,'浏览器-正式报价.xlsx'));
+		await page.getByText('已定稿 · V1',{exact:true}).waitFor();
+		assert.equal(await button('保存并试算').count(),0,'formal quote is immutable');
+		await button('创建修订版').click();await button('确定').click();
+		await page.getByText('草稿 · V2',{exact:true}).waitFor();
+		q=await api('/quotes/'+new URL(page.url()).searchParams.get('id'));assert.equal(q.result,null);
+		await page.getByRole('link',{name:'报价记录',exact:true}).click();
+		assert.equal((await api('/quotes')).length>=2,true);
+		await page.screenshot({path:path.join(out,'报价记录.png'),fullPage:true});
+		const original = await api('/quotes/'+id);assert.equal(original.state,'final');assert.equal(original.exports.length,2);
+		const v1=page.locator('.el-table__body tr').filter({hasText:'V1'}).filter({hasText:'迁移验收客户'}).first();
+		const archived=page.waitForResponse(r=>r.url().endsWith('/'+id+'/archive'));
+		await v1.getByRole('button',{name:'归档',exact:true}).click();await button('确定').click();await archived;
+		await page.getByText('已归档',{exact:true}).click();
+		const restored=page.waitForResponse(r=>r.url().endsWith('/'+id+'/restore'));
+		await button('恢复').first().click();await button('确定').click();await restored;
+		assert.equal((await api('/quotes/'+id)).state,'final');
+		await page.getByRole('link',{name:'报价工作台',exact:true}).click();
+		await button('导入客户清单').click();
+		await page.getByLabel('选择客户清单').setInputFiles(path.join(out,'客户验收.xls'));
+		await page.getByText('原表预览 · 前 12 个有内容的行',{exact:true}).waitFor();
+		await page.waitForFunction(()=>!document.querySelector('.el-loading-mask'));
+		await page.screenshot({path:path.join(out,'导入列映射.png'),fullPage:true});
+		await button('确认映射并创建报价').click();await button('保存并试算').waitFor();
+		await page.getByRole('dialog',{name:'导入客户清单',exact:true}).waitFor({state:'hidden'});
+		let imported=await api('/quotes/'+new URL(page.url()).searchParams.get('id'));
+		assert.equal(imported.body.rows.length,1);assert.equal(imported.body.rows[0].engineering_quantity,'10');
+		assert.equal(imported.body.rows[0].spec,'0.75');assert.equal(imported.body.duct_options.payment_option,'');
+		await field('客户名称').getByRole('textbox').fill('导入验收客户');
+		await field('项目名称').getByRole('textbox').fill('Excel 导入与安装报价');
+		await choose('面积结算口径 · 必选','净面积');await choose('成品状态 · 必选','半成品');
+		await choose('管件类型','直管');await choose('法兰形式 · 必选','角钢法兰');
+		await choose('报价含税口径 · 必选','含税');
+		await page.getByText('本单包含安装',{exact:true}).click();
+		await page.getByLabel('未税安装费').fill('200');
+		await page.getByRole('radio',{name:'付款进度70% 系数 × 1.20',exact:true}).click();
+		await button('保存并试算').click();await page.getByText('试算完成，可以生成正式报价',{exact:true}).waitFor();
+		imported=await api('/quotes/'+imported.id);
+		assert.equal(imported.result.fees.installation.amount,'202.0');
+		assert.equal(imported.result.payment.code,'with_install_progress_70');
+		await page.screenshot({path:path.join(out,'含安装报价.png'),fullPage:true});
+		const installed=page.waitForEvent('download');await button('生成正式报价').click();await button('确定').click();
+		await (await installed).saveAs(path.join(out,'浏览器-带安装.xlsx'));
+		assert.deepEqual(errors,[]);
+		fs.writeFileSync(path.join(out,'browser-results.json'),JSON.stringify({passed:true,total:'4250.0',checks:['初始化并发布指标','付款必选阻断','手工建单','保存试算','计算明细','草稿下载','正式报价与锁定','V2修订','记录列表','归档与恢复','xls上传与列映射','含安装付款方案','带安装正式导出'],pageErrors:errors},null,2));
+		console.log('PASS: real Java service + Vue UI browser workflow; total 4250.0');
+	} catch(e) {
+		await page.screenshot({path:path.join(out,'browser-failure.png'),fullPage:true});
+		console.error((await page.locator('body').innerText()).slice(-7000)); throw e;
+	} finally {await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

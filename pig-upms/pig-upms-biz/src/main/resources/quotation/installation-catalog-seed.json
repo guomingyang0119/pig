@@ -1,0 +1,825 @@
+{
+  "name": "安装劳务销售价（20260928最新版）",
+  "company_id": "guizhou",
+  "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx",
+  "source_sha256": "c1066f5f9c3c71072a2be154b96bdc1f5d6ec0d2eb0d2061cc8e818ad1cbe292",
+  "effective_from": "2026-09-28",
+  "effective_to": "",
+  "tax_factor": "1.01",
+  "four_auxiliary_price": "8",
+  "projects": [
+    {
+      "id": "four_3",
+      "name": "共板法兰风管",
+      "unit": "㎡",
+      "price": "30",
+      "kind": "duct",
+      "auxiliary_type": "common",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D3",
+      "note": ""
+    },
+    {
+      "id": "four_4",
+      "name": "角钢法兰风管",
+      "unit": "㎡",
+      "price": "35",
+      "kind": "duct",
+      "auxiliary_type": "angle",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D4",
+      "note": ""
+    },
+    {
+      "id": "four_5",
+      "name": "空调风管（小管及配合装修）",
+      "unit": "㎡",
+      "price": "55",
+      "kind": "duct",
+      "auxiliary_type": "common",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D5",
+      "note": ""
+    },
+    {
+      "id": "four_6",
+      "name": "不锈钢风管满焊",
+      "unit": "㎡",
+      "price": "100",
+      "kind": "duct",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D6",
+      "note": ""
+    },
+    {
+      "id": "four_6_flange",
+      "name": "不锈钢风管满焊（安装含法兰）",
+      "unit": "㎡",
+      "price": "110",
+      "kind": "duct",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "2026-09-28用户确认",
+      "note": "客户清单明确说明安装包含法兰时采用；单独填写法兰形式不触发"
+    },
+    {
+      "id": "four_7",
+      "name": "一体式复合风管合管（原表类别为成品吊装）",
+      "unit": "㎡",
+      "price": "35",
+      "kind": "duct",
+      "auxiliary_type": "composite",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D7",
+      "note": "原表存在名称或适用条件歧义，请报价员确认项目"
+    },
+    {
+      "id": "four_8",
+      "name": "单双面彩钢复合风管",
+      "unit": "㎡",
+      "price": "35",
+      "kind": "duct",
+      "auxiliary_type": "composite",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D8",
+      "note": ""
+    },
+    {
+      "id": "four_9",
+      "name": "橡塑包裹安装",
+      "unit": "㎡",
+      "price": "17",
+      "kind": "wrap",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D9",
+      "note": ""
+    },
+    {
+      "id": "four_10",
+      "name": "玻璃棉/柔性卷毯包裹安装",
+      "unit": "㎡",
+      "price": "18",
+      "kind": "wrap",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D10",
+      "note": ""
+    },
+    {
+      "id": "four_11",
+      "name": "防火板安装",
+      "unit": "㎡",
+      "price": "38",
+      "kind": "wrap",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D11",
+      "note": ""
+    },
+    {
+      "id": "four_12",
+      "name": "防火板+岩棉安装",
+      "unit": "㎡",
+      "price": "40",
+      "kind": "wrap",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D12",
+      "note": ""
+    },
+    {
+      "id": "four_13",
+      "name": "风机不区分大小",
+      "unit": "台",
+      "price": "500",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D13",
+      "note": ""
+    },
+    {
+      "id": "four_14",
+      "name": "壁式风机",
+      "unit": "台",
+      "price": "300",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D14",
+      "note": ""
+    },
+    {
+      "id": "four_15",
+      "name": "换气扇",
+      "unit": "台",
+      "price": "100",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D15",
+      "note": ""
+    },
+    {
+      "id": "four_16",
+      "name": "风阀",
+      "unit": "个",
+      "price": "50",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D16",
+      "note": ""
+    },
+    {
+      "id": "four_17",
+      "name": "远程控制机构",
+      "unit": "个",
+      "price": "65",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D17",
+      "note": ""
+    },
+    {
+      "id": "four_18",
+      "name": "单双层百叶风口",
+      "unit": "个",
+      "price": "20",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D18",
+      "note": ""
+    },
+    {
+      "id": "four_19",
+      "name": "自垂百叶/风管不燃",
+      "unit": "个",
+      "price": "50",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D19",
+      "note": "原表存在名称或适用条件歧义，请报价员确认项目"
+    },
+    {
+      "id": "four_20",
+      "name": "正压送风口",
+      "unit": "个",
+      "price": "65",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D20",
+      "note": ""
+    },
+    {
+      "id": "four_21",
+      "name": "消声器/静压箱",
+      "unit": "个",
+      "price": "300",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D21",
+      "note": ""
+    },
+    {
+      "id": "four_22",
+      "name": "防火风口",
+      "unit": "个",
+      "price": "60",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D22",
+      "note": ""
+    },
+    {
+      "id": "four_23",
+      "name": "防雨百叶长+宽＜1.5m",
+      "unit": "个",
+      "price": "50",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D23",
+      "note": ""
+    },
+    {
+      "id": "four_24",
+      "name": "防雨百叶风口长+宽≥1.5m",
+      "unit": "个",
+      "price": "100",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 贵州、四川、云南、广西风管安装报价!D24",
+      "note": ""
+    },
+    {
+      "id": "four_25",
+      "name": "散流器",
+      "unit": "个",
+      "price": "35",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "2026-09-28用户确认",
+      "note": "带阀散流器按正常散流器安装计价，不叠加风阀安装费"
+    },
+    {
+      "id": "four_26",
+      "name": "消声/防雨弯头",
+      "unit": "个",
+      "price": "65",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "贵州",
+        "四川",
+        "云南",
+        "广西"
+      ],
+      "source": "2026-09-28用户确认",
+      "note": ""
+    },
+    {
+      "id": "sx_3",
+      "name": "正压送风及地下室送风系统共板法兰风管",
+      "unit": "㎡",
+      "price": "40",
+      "kind": "duct",
+      "auxiliary_type": "common",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G3",
+      "note": ""
+    },
+    {
+      "id": "sx_4",
+      "name": "防排烟系统角铁法兰风管",
+      "unit": "㎡",
+      "price": "45",
+      "kind": "duct",
+      "auxiliary_type": "angle",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G4",
+      "note": ""
+    },
+    {
+      "id": "sx_5",
+      "name": "卫生间排风及空调系统共板法兰风管",
+      "unit": "㎡",
+      "price": "50",
+      "kind": "duct",
+      "auxiliary_type": "common",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G5",
+      "note": ""
+    },
+    {
+      "id": "sx_6",
+      "name": "不锈钢风管",
+      "unit": "㎡",
+      "price": "110",
+      "kind": "duct",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G6",
+      "note": ""
+    },
+    {
+      "id": "sx_7",
+      "name": "螺旋/圆形风管",
+      "unit": "㎡",
+      "price": "65",
+      "kind": "duct",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G7",
+      "note": ""
+    },
+    {
+      "id": "sx_8",
+      "name": "单/双面彩钢复合风管",
+      "unit": "㎡",
+      "price": "60",
+      "kind": "duct",
+      "auxiliary_type": "composite",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G8",
+      "note": ""
+    },
+    {
+      "id": "sx_9",
+      "name": "共板法兰安装辅材",
+      "unit": "㎡",
+      "price": "10",
+      "kind": "auxiliary",
+      "auxiliary_type": "common",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G9",
+      "note": ""
+    },
+    {
+      "id": "sx_10",
+      "name": "角铁法兰安装辅材",
+      "unit": "㎡",
+      "price": "12",
+      "kind": "auxiliary",
+      "auxiliary_type": "angle",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G10",
+      "note": ""
+    },
+    {
+      "id": "sx_11",
+      "name": "复合风管安装辅材",
+      "unit": "㎡",
+      "price": "20",
+      "kind": "auxiliary",
+      "auxiliary_type": "composite",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G11",
+      "note": ""
+    },
+    {
+      "id": "sx_12",
+      "name": "玻璃岩棉防火包裹",
+      "unit": "㎡",
+      "price": "20",
+      "kind": "wrap",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G12",
+      "note": ""
+    },
+    {
+      "id": "sx_13",
+      "name": "硅酸钙板防火包裹",
+      "unit": "㎡",
+      "price": "50",
+      "kind": "wrap",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G13",
+      "note": ""
+    },
+    {
+      "id": "sx_14",
+      "name": "散流器（空调系统）",
+      "unit": "个",
+      "price": "35",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G14",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_15",
+      "name": "成品防火软连接/柔性软接头",
+      "unit": "㎡",
+      "price": "45",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G15",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_16",
+      "name": "防虫/防鼠网",
+      "unit": "个",
+      "price": "50",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G16",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_17",
+      "name": "消声/防雨弯头",
+      "unit": "个",
+      "price": "65",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G17",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_18",
+      "name": "静压箱及消声器",
+      "unit": "台",
+      "price": "280",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G18",
+      "note": ""
+    },
+    {
+      "id": "sx_19",
+      "name": "消防送/排风、排烟风机",
+      "unit": "台",
+      "price": null,
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G19:G20",
+      "note": "<1.5kW；1.5—17.5kW（含端点）；>17.5kW；双速档位须人工确认",
+      "power_prices": [
+        "300",
+        "600",
+        "800"
+      ]
+    },
+    {
+      "id": "sx_20",
+      "name": "油烟净化机、管道式排风机",
+      "unit": "台",
+      "price": null,
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G19:G20",
+      "note": "<1.5kW；1.5—17.5kW（含端点）；>17.5kW；双速档位须人工确认",
+      "power_prices": [
+        "300",
+        "600",
+        "800"
+      ]
+    },
+    {
+      "id": "sx_21",
+      "name": "换气扇（含排气扇、吸顶式换气扇）",
+      "unit": "台",
+      "price": "100",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G21",
+      "note": ""
+    },
+    {
+      "id": "sx_22",
+      "name": "方形壁式换气扇",
+      "unit": "个",
+      "price": "120",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G22",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_23",
+      "name": "防火阀/排烟阀/调节阀/对开多叶调节阀/止回阀",
+      "unit": "套",
+      "price": "55",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G23",
+      "note": ""
+    },
+    {
+      "id": "sx_24",
+      "name": "远控常闭排烟阀/280℃排烟防火阀（连锁风机）",
+      "unit": "个",
+      "price": "110",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G24",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_25",
+      "name": "单/双层百叶送/排风口（含可调单层百叶）",
+      "unit": "个",
+      "price": "25",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G25",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_26",
+      "name": "防火风口",
+      "unit": "个",
+      "price": "30",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G26",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_27",
+      "name": "自垂百叶风口",
+      "unit": "个",
+      "price": "45",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G27",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_28",
+      "name": "AH格栅风口/AH/D格栅风口（带阀）",
+      "unit": "个",
+      "price": "45",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G28",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_29",
+      "name": "防火风口（消防常开弱电控制否 70℃熔断）",
+      "unit": "个",
+      "price": "55",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G29",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_30",
+      "name": "可开链式百叶风口",
+      "unit": "个",
+      "price": "60",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G30",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_31",
+      "name": "多叶送风口/正压送风口/电动防火风口",
+      "unit": "个",
+      "price": "95",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G31",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_32",
+      "name": "电动多叶排烟风口（带手动远程控制机构）",
+      "unit": "套",
+      "price": "95",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G32",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    },
+    {
+      "id": "sx_33",
+      "name": "防雨百叶风口/板式排烟口/远程多叶送风口",
+      "unit": "个",
+      "price": "110",
+      "kind": "equipment",
+      "auxiliary_type": "",
+      "regions": [
+        "陕西"
+      ],
+      "source": "科庆-通风劳务安装报价总汇.xlsx   111(1)(1)(1).xlsx / 陕西风管安装报价!G33",
+      "note": " 已含原表所列小辅材；带阀、执行器或远控机构的项目不得重复收费"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+__pycache__/
+.pytest_cache/
+target/
+*.sqlite3
+reference/data/
+reference/test-output/
+test-output/
+ui/.vite/
