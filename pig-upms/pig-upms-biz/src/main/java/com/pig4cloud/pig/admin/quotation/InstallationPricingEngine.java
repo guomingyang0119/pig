@@ -44,7 +44,7 @@ public final class InstallationPricingEngine {
 	}
 
 	private static String unit(Object value) {
-		return Set.of("m2", "m²", "平方米", "平米").contains(str(value)) ? "㎡" : str(value);
+		return Set.of("m2", "m²", "平方米", "平米", "平方").contains(str(value)) ? "㎡" : str(value);
 	}
 
 	private static BigDecimal amount(Object value, String label, boolean positive) {
@@ -200,7 +200,8 @@ public final class InstallationPricingEngine {
 			return null;
 		}
 		// 风机附带自垂或防雨百叶时只计风机安装，不重复计算百叶安装。
-		if (name.contains("风机") && name.contains("百叶"))
+		boolean fan = EquipmentPricingEngine.classify(row).equals("fan");
+		if (fan && name.contains("百叶"))
 			return fanProject(row, sx);
 		if (name.contains("防雨百叶"))
 			return rainLouverProject(row, sx);
@@ -208,6 +209,8 @@ public final class InstallationPricingEngine {
 			return sx ? "sx_17" : "four_26";
 		if (name.contains("散流器"))
 			return sx ? "sx_14" : "four_25";
+		if (name.contains("电动泄压阀"))
+			return sx ? "sx_23" : "four_16";
 		if (sx) {
 			if (contains(name, "远控常闭排烟阀") || name.contains("280") && name.contains("排烟防火阀"))
 				return "sx_24";
@@ -215,7 +218,7 @@ public final class InstallationPricingEngine {
 				return "sx_32";
 			if (contains(name, "板式排烟口", "远程多叶送风口"))
 				return "sx_33";
-			if (contains(name, "多叶送风口", "正压送风口", "电动防火风口"))
+			if (contains(name, "多叶排烟口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "电动防火风口"))
 				return "sx_31";
 			if (name.contains("防火风口"))
 				return contains(name, "70", "弱电", "常开") ? "sx_29" : "sx_26";
@@ -229,34 +232,35 @@ public final class InstallationPricingEngine {
 				return "sx_28";
 		}
 		else {
-			if (contains(name, "板式排烟口", "板式排烟风口", "多页排烟口"))
+			if (contains(name, "板式排烟口", "板式排烟风口", "多叶排烟口"))
 				return "four_20";
-			if (contains(name, "多叶送风口", "正压送风口", "组合送风口"))
+			if (contains(name, "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "组合送风口"))
 				return "four_20";
 			if (name.contains("防火风口"))
 				return "four_22";
 		}
-		if (contains(name, "防火阀", "排烟阀", "调节阀", "止回阀", "风阀")) {
+		if (contains(name, "防火阀", "排烟阀", "调节阀", "止回阀", "风阀", "电动阀", "蝶阀")) {
 			if (!sx)
 				return "four_16";
 			if (!contains(name, "电动", "自动", "远程", "远控"))
 				return "sx_23";
 		}
-		if (contains(name, "单层百叶", "双层百叶") || name.contains("带阀风口"))
+		if (((name.contains("单层") || name.contains("双层")) && name.contains("百叶")) || name.contains("带阀风口"))
 			return sx ? "sx_25" : "four_18";
+		// 带阀只表示风口附带控制开关，不另计风阀安装；自垂百叶仍按自垂百叶项目计价。
+		if (name.contains("自垂百叶"))
+			return sx ? "sx_27" : "four_19";
 		// 这些名称包含执行机构或复合配置，最新版安装表没有给出四地区叠加关系。
 		if (contains(name, "防雨", "防火风口", "多叶", "远程", "远控", "不燃", "电动", "自动", "带阀"))
 			return null;
 		if (contains(name, "换气扇", "排气扇"))
 			return sx ? "sx_21" : "four_15";
-		if (name.contains("风机"))
+		if (fan)
 			return fanProject(row, sx);
 		if (contains(name, "静压箱", "消声器"))
 			return sx ? "sx_18" : "four_21";
 		if (name.contains("正压送风口"))
 			return sx ? "sx_31" : "four_20";
-		if (name.contains("自垂百叶"))
-			return sx ? "sx_27" : "four_19";
 		return null;
 	}
 
@@ -277,6 +281,10 @@ public final class InstallationPricingEngine {
 			}
 			if (region.isEmpty())
 				throw new RuleException("请选择安装地区");
+			String productRuleType = s(map(map(row.get("_product_rule_resource")).get("body")), "rule_type");
+			if (Set.of("combination", "formula").contains(productRuleType)
+					&& blank(entry.get("project_id")) && blank(entry.get("unit_price")))
+				throw new RuleException(productRuleType.equals("formula") ? "自定义产品请明确安装项目或填写未税安装单价" : "组合产品请明确整套安装项目或填写整套未税安装单价");
 			String projectId = str(first(entry.get("project_id"), autoProject(row, quote, region)));
 			var project = list(catalog.get("projects")).stream()
 				.filter(p -> s(p, "id").equals(projectId))
@@ -306,11 +314,23 @@ public final class InstallationPricingEngine {
 				throw new RuleException("安装单位与所选项目不一致，不能自动换算");
 			if (isDuct && state.equals("finished") && !unit.equals("㎡"))
 				throw new RuleException("成品风管安装单价必须按每㎡填写");
+			boolean staticBoxCountEquivalent = projectId.equals("four_21") && s(row, "name").contains("静压箱")
+					&& unit.equals("个") && unit(row.get("unit")).equals("台");
+			String rowName = s(row, "name");
+			boolean reviewedOutletSet = Set.of("four_18", "sx_25").contains(projectId)
+					|| Set.of("four_20", "sx_31").contains(projectId)
+							&& contains(rowName, "多叶排烟口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口")
+					|| Set.of("four_22", "sx_26", "sx_29", "sx_31").contains(projectId) && rowName.contains("防火风口");
+			boolean outletCountEquivalent = reviewedOutletSet && unit.equals("个")
+					&& unit(row.get("unit")).equals("套");
+			boolean pressureReliefCountEquivalent = projectId.equals("sx_23") && rowName.contains("电动泄压阀")
+					&& unit.equals("套") && unit(row.get("unit")).equals("个");
 			Object quantity = entry.get("quantity");
 			if (blank(quantity)) {
 				if (areaElbow)
 					quantity = first(row.get("engineering_quantity"), row.get("quantity"));
-				else if (!unit.equals(duct(row) ? "㎡" : unit(row.get("unit"))))
+				else if (!unit.equals(duct(row) ? "㎡" : unit(row.get("unit"))) && !staticBoxCountEquivalent
+						&& !outletCountEquivalent && !pressureReliefCountEquivalent)
 					throw new RuleException("供货与安装单位不同，请确认安装工程量及单位");
 				else
 					quantity = row.get(duct(row) ? "engineering_quantity" : "quantity");
@@ -468,14 +488,26 @@ public final class InstallationPricingEngine {
 			.map(l -> n(map(l.get("auxiliary")).get("amount")))
 			.reduce(ZERO, QuoteData::add), site = ZERO;
 		BigDecimal lineAmount = priced.stream().map(line -> priceLine(line, taxFactor)).reduce(ZERO, QuoteData::add);
-		// 现场附加费（含高空措施费）只在报价人员主动选择后计取，施工标高和交叉施工不自动触发价格。
-		boolean siteSelected = yes(options.get("include_site_fee"))
-				|| !options.containsKey("include_site_fee") && !blank(options.get("site_amount"));
+		// 交叉施工必须明确选择计取或不计取；其他工况仍由报价人员主动选择是否计取现场附加费。
+		boolean crossWork = yes(options.get("cross_work"));
+		boolean usesExplicitCrossWorkDecision = options.containsKey("cross_work_fee_decision");
+		String crossWorkFeeDecision = s(options, "cross_work_fee_decision");
+		boolean siteSelected = crossWork && usesExplicitCrossWorkDecision ? crossWorkFeeDecision.equals("charge")
+				: yes(options.get("include_site_fee"))
+						|| !options.containsKey("include_site_fee") && !blank(options.get("site_amount"));
+		if (crossWork && usesExplicitCrossWorkDecision && !crossWorkFeeDecision.equals("charge")
+				&& !crossWorkFeeDecision.equals("waive"))
+			issues.add("安装费：交叉施工请确认是否计取现场附加费");
+		if (crossWork && usesExplicitCrossWorkDecision && crossWorkFeeDecision.equals("waive")
+				&& blank(options.get("site_waive_reason")))
+			issues.add("安装费：交叉施工不计取现场附加费时请填写原因");
 		try {
 			if (!blank(options.get("height")))
 				amount(options.get("height"), "施工标高", false);
 			if (siteSelected)
 				site = amount(options.get("site_amount"), "未税现场附加费", false);
+			if (crossWork && crossWorkFeeDecision.equals("charge") && site.signum() <= 0)
+				throw new RuleException("交叉施工计取现场附加费时金额必须大于0");
 			if (site.signum() > 0 && blank(options.get("site_note")))
 				throw new RuleException("现场附加费大于0时请填写附加原因");
 		}
@@ -491,7 +523,9 @@ public final class InstallationPricingEngine {
 				"auxiliary_amount", text(auxiliaries), "line_amount", text(lineAmount), "site_amount", text(site),
 				"site_quoted_amount", text(siteQuoted), "site_tax_amount", text(siteTaxed.subtract(site, MC)),
 				"site_rounding_difference", text(siteQuoted.subtract(siteTaxed, MC)), "site_note",
-				siteSelected ? options.getOrDefault("site_note", "") : "", "tax_factor", text(taxFactor), "tax_amount",
+				siteSelected ? options.getOrDefault("site_note", "") : "", "cross_work_fee_decision",
+				crossWorkFeeDecision, "site_waive_reason", options.getOrDefault("site_waive_reason", ""), "tax_factor",
+				text(taxFactor), "tax_amount",
 				text(taxed.subtract(untaxed, MC)), "rounding_difference", text(amount.subtract(taxed, MC)), "lines",
 				lines, "reason", includesTax
 						? "每行安装人工与辅材分别×1.01后向上取整数元；现场附加费单独×1.01后向上取整数元；付款系数在整单末尾应用"

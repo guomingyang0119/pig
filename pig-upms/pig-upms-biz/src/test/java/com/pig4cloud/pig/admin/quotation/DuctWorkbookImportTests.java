@@ -27,6 +27,27 @@ class DuctWorkbookImportTests {
 	}
 
 	@Test
+	void accessorySummaryAcceptsQuantityColumnWithoutEngineeringQuantity() {
+		var values = List.of(List.of("产品名称", "数量", "单位"), List.of("角码", "8000", "个"),
+				List.of("卡条", "2628", "米"), List.of("30角钢", "120", "米"), List.of("防火阀", "1", "个"));
+		var built = importer.buildWorkbook(List.of(sheet("Sheet1", values)), null);
+		var options = map(built.get("duct_options"));
+		assertEquals("8000", options.get("corner_count"));
+		assertEquals("2628", options.get("clip_meters"));
+		assertEquals("120", options.get("flange_30_meters"));
+	}
+
+	@Test
+	void accessorySummaryPrefersQuantityAndFallsBackToEngineeringQuantity() {
+		var values = List.of(List.of("产品名称", "数量", "工程量", "单位"), List.of("角码", "20", "99", "个"),
+				List.of("卡条", "", "88", "米"), List.of("防火阀", "1", "1", "个"));
+		var built = importer.buildWorkbook(List.of(sheet("Sheet1", values)), null);
+		var options = map(built.get("duct_options"));
+		assertEquals("20", options.get("corner_count"));
+		assertEquals("88", options.get("clip_meters"));
+	}
+
+	@Test
 	void perSheetFlangeHintsAndNotesKeepTheirSourceWhileSharingOrderOptions() {
 		var first = sheet("角钢", List.of(List.of("产品名称", "工程量", "单位", "法兰方式"), List.of("风管", "10", "㎡", "角钢法兰")));
 		var second = sheet("共板", List.of(List.of("产品名称", "工程量", "单位", "法兰方式"), List.of("风管", "15", "㎡", "共板法兰")));

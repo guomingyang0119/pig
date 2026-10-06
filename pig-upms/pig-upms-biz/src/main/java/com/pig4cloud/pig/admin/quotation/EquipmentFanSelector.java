@@ -131,9 +131,9 @@ public final class EquipmentFanSelector {
 		return n(((List<?>) p.get("powers")).get(0));
 	}
 
-	private static int score(Choice a, Choice b) {
+	private static int selectionOrder(Choice a, Choice b) {
 		int c = firstPower(a.point).compareTo(firstPower(b.point));
-		for (String k : List.of("airflow", "pressure", "speed")) {
+		for (String k : List.of("size", "airflow", "pressure")) {
 			if (c != 0)
 				return c;
 			c = n(a.point.get(k)).compareTo(n(b.point.get(k)));
@@ -258,8 +258,6 @@ public final class EquipmentFanSelector {
 					.toList();
 				if (!exact.isEmpty())
 					eligible = new ArrayList<>(exact);
-				if (eligible.size() > 1)
-					throw failure("主路径仍有多个合格工况点，请明确候选型号/功率/转速配置", eligible);
 			}
 			if (backup || reselect) {
 				var smallest = eligible.stream()
@@ -268,9 +266,9 @@ public final class EquipmentFanSelector {
 					.orElseThrow();
 				eligible.removeIf(x -> n(x.point.get("size")).compareTo(smallest) != 0);
 			}
-			eligible.sort(EquipmentFanSelector::score);
+			eligible.sort(EquipmentFanSelector::selectionOrder);
 			Choice first = eligible.get(0);
-			var best = eligible.stream().filter(x -> score(x, first) == 0).toList();
+			var best = eligible.stream().filter(x -> selectionOrder(x, first) == 0).toList();
 			if (best.stream().map(x -> List.of(x.point.get("model"), x.point.get("poles"))).distinct().count() > 1)
 				throw failure("多个系列满足相同工况，请明确候选型号", best);
 			selected = first;

@@ -39,11 +39,9 @@ import com.pig4cloud.pig.admin.mapper.*;
 import com.pig4cloud.pig.admin.service.*;
 import com.pig4cloud.pig.common.core.constant.CacheConstants;
 import com.pig4cloud.pig.common.core.constant.CommonConstants;
-import com.pig4cloud.pig.common.core.constant.SecurityConstants;
 import com.pig4cloud.pig.common.core.constant.enums.LoginTypeEnum;
 import com.pig4cloud.pig.common.core.util.MsgUtils;
 import com.pig4cloud.pig.common.core.util.R;
-import com.pig4cloud.pig.common.core.util.WebUtils;
 import com.pig4cloud.pig.common.data.cache.RedisUtils;
 import com.pig4cloud.pig.common.data.resolver.ParamResolver;
 import com.pig4cloud.pig.common.excel.vo.ErrorMessage;
@@ -75,6 +73,8 @@ import java.util.stream.Collectors;
 public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> implements SysUserService {
 
 	private static final PasswordEncoder ENCODER = new BCryptPasswordEncoder();
+
+	private static final String REGISTER_ROLE_CODE = "GENERAL_USER";
 
 	private final SysMenuService sysMenuService;
 
@@ -518,17 +518,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 	@Override
 	@Transactional(rollbackFor = Exception.class)
 	public R<Boolean> registerUser(RegisterUserDTO userDto) {
-		String feignHeader = WebUtils.getRequest().getHeader(SecurityConstants.FROM);
-		// 外部注册校验短信验证码,对 AI 的内部注册跳过验证码处理
-		if (!SecurityConstants.FROM_IN.equals(feignHeader)) {
-			if (StrUtil.isBlank(userDto.getCode())) {
-				return R.failed(MsgUtils.getMessage(UpmsErrorCodes.SYS_PARAM_ILLEGAL));
-			}
-			String codeObj = RedisUtils.get(
-					CacheConstants.DEFAULT_CODE_KEY + LoginTypeEnum.SMS.getType() + StringPool.AT + userDto.getPhone());
-			if (!StrUtil.equals(codeObj, userDto.getCode())) {
-				return R.failed(MsgUtils.getMessage(UpmsErrorCodes.SYS_APP_SMS_ERROR));
-			}
+		if (userDto == null || StrUtil.isBlank(userDto.getUsername()) || StrUtil.isBlank(userDto.getPassword())) {
+			return R.failed(MsgUtils.getMessage(UpmsErrorCodes.SYS_PARAM_ILLEGAL));
 		}
 
 		// 判断用户名是否存在
@@ -539,16 +530,25 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 			return R.failed(message);
 		}
 
-		// 判断手机号是否存在
-		boolean phoneExists = this.exists(Wrappers.<SysUser>lambdaQuery().eq(SysUser::getPhone, userDto.getPhone()));
-		if (phoneExists) {
-			String message = MsgUtils.getMessage(UpmsErrorCodes.SYS_USER_PHONE_EXISTING, userDto.getPhone());
-			return R.failed(message);
+		// 内部小程序注册仍带手机号；公开注册没有手机号。
+		if (StrUtil.isNotBlank(userDto.getPhone())) {
+			boolean phoneExists = this.exists(Wrappers.<SysUser>lambdaQuery().eq(SysUser::getPhone, userDto.getPhone()));
+			if (phoneExists) {
+				String message = MsgUtils.getMessage(UpmsErrorCodes.SYS_USER_PHONE_EXISTING, userDto.getPhone());
+				return R.failed(message);
+			}
 		}
 
-		// 单独的用户避免越权
+		SysRole generalUserRole = sysRoleService
+				.getOne(Wrappers.<SysRole>lambdaQuery().eq(SysRole::getRoleCode, REGISTER_ROLE_CODE));
+		if (generalUserRole == null) {
+			return R.failed("普通用户角色未配置");
+		}
+
+		// 单独构造用户并固定普通用户角色，避免通过请求体或默认角色配置越权。
 		UserDTO user = new UserDTO();
 		BeanUtils.copyProperties(userDto, user);
+		user.setRole(Collections.singletonList(generalUserRole.getRoleId()));
 		return R.ok(saveUser(user));
 	}
 

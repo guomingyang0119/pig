@@ -38,10 +38,11 @@ final class QuoteReviewImportService {
 			int workbookRevision = integer(properties.get("revision"), "报价版本");
 			if (workbookRevision != expectedRevision)
 				throw new RuleException("报价单在校对版导出后已有修改，请重新导出校对版");
-			if (!DuctExportService.TEMPLATE_VERSION.equals(properties.get("template_version")))
+			if (!Set.of(DuctExportService.TEMPLATE_VERSION, "review-roundtrip-20261006-v10", "review-roundtrip-20260930-v9")
+					.contains(properties.get("template_version")))
 				throw new RuleException("校对版模板已更新，请重新导出后填写");
 			int columns = integer(properties.get("column_count"), "校对版列数");
-			if (!Set.of(10, 12).contains(columns))
+			if (!Set.of(10, 12, 13).contains(columns))
 				throw new RuleException("校对版列结构不正确");
 			Sheet visible = wb.getSheet(properties.get("visible_sheet"));
 			if (visible == null)
@@ -75,17 +76,27 @@ final class QuoteReviewImportService {
 				boolean required = yes(current.get("was_pending")) || !blank(baseline.get("material_amount"))
 						|| !blank(baseline.get("installation_amount"));
 				Set<String> derivedFields = new LinkedHashSet<>();
-				boolean complete = complete(current, visibleRow, required, columns == 12, derivedFields);
+				boolean complete = complete(current, visibleRow, required, columns != 10, derivedFields);
 				if (equipmentFreightSummary) {
 					derivedFields.add("material_unit");
 					if (freightIncludedInRows)
 						derivedFields.add("material_amount");
-					if (columns == 12)
+					if (columns != 10)
 						derivedFields.add("line_total");
 				}
-				if (yes(current.get("was_pending")) && complete && s(current, "process").equals("待确认")) {
-					current.put("process", "人工确认");
-					derivedFields.add("process");
+				if (yes(current.get("was_pending")) && complete) {
+					if (s(current, "process").equals("待确认")) {
+						current.put("process", "人工确认");
+						derivedFields.add("process");
+					}
+					String remark = s(current, "remark");
+					if (remark.equals(s(baseline, "remark"))) {
+						String cleaned = resolvedRemark(remark);
+						if (!cleaned.equals(remark)) {
+							current.put("remark", cleaned);
+							derivedFields.add("remark");
+						}
+					}
 				}
 				boolean changed = false, priceChanged = false;
 				List<Map<String, Object>> rowChanges = new ArrayList<>();
@@ -146,6 +157,22 @@ final class QuoteReviewImportService {
 		}
 	}
 
+	private static String resolvedRemark(String remark) {
+		List<String> kept = new ArrayList<>();
+		for (String line : remark.split("\\R")) {
+			String reviewNote = line.trim();
+			if (reviewNote.startsWith("系统计价逻辑：") || reviewNote.startsWith("系统识别类型："))
+				continue;
+			for (String part : line.split("；")) {
+				String text = part.trim();
+				if (!text.isEmpty() && !text.startsWith("待确认：") && !text.startsWith("安装待确认：")
+						&& !text.startsWith("待确定：") && !text.startsWith("安装待确定："))
+					kept.add(text);
+			}
+		}
+		return String.join("；", kept);
+	}
+
 	private static Map<String, String> properties(Sheet metadata, FormulaEvaluator evaluator) {
 		Map<String, String> values = new LinkedHashMap<>();
 		for (int i = 0; i < 8; i++) {
@@ -169,7 +196,10 @@ final class QuoteReviewImportService {
 				cellText(row.getCell(4), evaluator), "unit", cellText(row.getCell(5), evaluator), "quantity",
 				cellText(row.getCell(6), evaluator), "material_unit", cellText(row.getCell(7), evaluator),
 				"material_amount", cellText(row.getCell(8), evaluator));
-		if (columns == 12)
+		if (columns == 13)
+			value.putAll(obj("installation_amount", cellText(row.getCell(10), evaluator), "line_total",
+					cellText(row.getCell(11), evaluator), "remark", cellText(row.getCell(12), evaluator)));
+		else if (columns == 12)
 			value.putAll(obj("installation_amount", cellText(row.getCell(9), evaluator), "line_total",
 					cellText(row.getCell(10), evaluator), "remark", cellText(row.getCell(11), evaluator)));
 		else
@@ -181,10 +211,10 @@ final class QuoteReviewImportService {
 	private static Map<String, Object> visibleEquipmentFreight(Row row, FormulaEvaluator evaluator, int columns,
 			Map<String, Object> baseline) {
 		Map<String, Object> value = new LinkedHashMap<>(baseline);
-		String amount = cellText(row.getCell(columns == 12 ? 10 : 8), evaluator);
+		String amount = cellText(row.getCell(columns == 13 ? 11 : columns == 12 ? 10 : 8), evaluator);
 		value.put("material_unit", amount);
 		value.put("material_amount", amount);
-		if (columns == 12) {
+		if (columns != 10) {
 			value.put("installation_amount", "0");
 			value.put("line_total", amount);
 		}

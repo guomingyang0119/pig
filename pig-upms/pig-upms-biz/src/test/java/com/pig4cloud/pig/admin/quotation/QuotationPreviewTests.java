@@ -42,7 +42,8 @@ class QuotationPreviewTests {
 			var tx = new TransactionTemplate(new DataSourceTransactionManager(source));
 			var actor = new QuoteService.Actor(1, "隔离验收负责人", true);
 			var stopped = new CountDownLatch(1);
-			HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 18762), 0);
+			int port = Integer.getInteger("quotation.preview.port", 18762);
+			HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
 			var executor = Executors.newFixedThreadPool(4);
 			server.setExecutor(executor);
 			server.createContext("/", exchange -> {
@@ -61,6 +62,13 @@ class QuotationPreviewTests {
 					Object response = tx.execute(status -> {
 						String id = parts.length > 1 ? parts[1] : "", action = parts.length > 2 ? parts[2] : "";
 						return switch (parts[0]) {
+							case "product-rules" -> parts.length == 1
+									? (method.equals("GET") ? service.productRules(actor)
+											: service.createProductRule(actor, map(data.get("body"))))
+									: id.equals("recommendations") ? service.productRuleRecommendations(actor, data)
+											: id.equals("trial") ? service.trialProductRule(actor, data)
+													: method.equals("PUT") ? service.editProductRule(actor, id, data)
+															: service.productRuleAction(actor, id, action, data);
 							case "resources" -> parts.length == 1
 									? (method.equals("GET") ? service.resources() : service.createCatalog(actor,
 											str(data.getOrDefault("kind", "duct_catalog")), map(data.get("body"))))
@@ -116,7 +124,7 @@ class QuotationPreviewTests {
 			server.start();
 			Files.createDirectories(Path.of("..", "..", "quotation-verification", "test-output"));
 			Files.writeString(Path.of("..", "..", "quotation-verification", "test-output", "preview-ready.txt"),
-					"127.0.0.1:18762");
+					"127.0.0.1:" + port);
 			try {
 				stopped.await(45, TimeUnit.MINUTES);
 			}

@@ -80,6 +80,10 @@ public final class DuctPricingEngine {
 		Set<BigDecimal> values = new TreeSet<>();
 		while (m.find())
 			values.add(n(m.group(1)));
+		Matcher source = match("(?:厚度|板厚|厚)\\s*[:：=＝]?\\s*(0\\.5|0\\.6|0\\.75|1\\.0|1\\.2|1\\.5|2\\.0|1|2)\\s*(?:mm|毫米)?",
+				s(row, "source_text"));
+		while (source.find())
+			values.add(n(source.group(1)));
 		if (values.size() == 1)
 			return values.iterator().next();
 		throw new RuleException("待确认：请明确风管厚度(mm)");
@@ -117,7 +121,7 @@ public final class DuctPricingEngine {
 
 	static String state(Map<String, Object> row, Map<String, Object> options) {
 		String value = alias(attr(row, "product_state"), Map.of("半成品", "semi", "成品", "finished"));
-		String desc = description(row) + " " + s(row, "remark");
+		String desc = description(row) + " " + s(row, "remark") + " " + s(row, "source_text");
 		if (value.isEmpty())
 			value = desc.contains("半成品") ? "semi" : desc.contains("成品") ? "finished" : s(options, "product_state");
 		if (!Set.of("semi", "finished").contains(value))
@@ -211,6 +215,7 @@ public final class DuctPricingEngine {
 		BigDecimal untaxedUnit = round(mul(base, areaFactor)), unit = round(mul(base, areaFactor, taxFactor));
 		BigDecimal untaxedAmount = round(mul(untaxedUnit, quantity)), amount = round(mul(unit, quantity));
 		return obj("base_unit_price", text(base), "untaxed_unit_price", text(untaxedUnit), "unit_price", text(unit),
+				"area_factor", text(areaFactor), "tax_factor", text(taxFactor),
 				"untaxed_amount", text(untaxedAmount), "amount", text(amount), "tax_amount",
 				text(amount.subtract(untaxedAmount, MC)));
 	}
@@ -255,6 +260,8 @@ public final class DuctPricingEngine {
 			return out;
 		}
 		try {
+			if (!blank(source.get("product_rule_issue")))
+				throw new RuleException(s(source, "product_rule_issue"));
 			if (yes(source.get("source_issue")) && !yes(source.get("source_issue_confirmed")))
 				throw new RuleException("原文件存在未缓存公式或错误值，请先核对");
 			if ((!s(source, "category").isEmpty() && !s(source, "category").equals("风管"))
@@ -421,6 +428,21 @@ public final class DuctPricingEngine {
 					"rule", resource, "payment_coefficient", text(coefficient), "payment_applied", false, "coverage",
 					obj("installation", false, "freight", yes(options.get("include_freight"))), "tax_basis",
 					yes(options.get("tax_included")) ? "included" : "excluded"));
+			out.put("calculation_inputs", obj("material_formula", s(expressions, "material_price"), "body_formula",
+					s(expressions, "body_sale"), "ton_price", materials.get(0).get("ton_price"), "density",
+					text(n(env.get("density"))), "thickness", text(thickness), "material_price", text(materialPrice),
+					"processing", text(processing), "closing", text(closing), "accessory_per_sqm", text(rowAccessory),
+					"body", text(body), "punch", text(punch), "flange_per_area", text(flangePerArea),
+					"round_area", text(roundArea), "combined_with_freight", text(combined), "freight", text(freight),
+					"tax_factor", text(tax), "area_factor", text(factor), "flange_per_meter", text(flangePerMeter),
+					"flange_per_meter_formula", s(expressions, "flange_per_meter"), "flange_per_area_formula",
+					s(expressions, "flange_per_area"), "flange_area_factor", s(rates, "flange_area_factor"),
+					"flange_grade", selectedFlange == null ? null
+							: selectedFlange.getOrDefault("grade", selectedFlange.get("kg_per_bar")),
+					"flange_ton_price", selectedFlange == null ? null : selectedFlange.get("ton_price"),
+					"flange_processing", selectedFlange == null ? null : selectedFlange.get("processing_per_m"),
+					"round_pi", roundRate == null ? null : text(rate(rates, "round_flange_pi", "3.14")),
+					"round_rate", roundRate == null ? null : text(roundRate)));
 			List<Map<String, Object>> traces = new ArrayList<>(
 					List.of(trace("铁皮材料价/㎡", s(expressions, "material_price"), materialPrice),
 							trace("风管基础加工费/㎡", "按材质、厚度、管件类型取费", processing.subtract(extra, MC)),

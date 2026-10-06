@@ -19,10 +19,13 @@ public final class DuctImportService {
 	public static final List<String> ATTRIBUTES = List.of("model", "material", "flange", "area_basis", "product_state",
 			"shape", "flange_material", "flange_size", "flange_grade", "flange_weight", "flange_meters", "diameter",
 			"round_flange_count", "width", "height", "length", "thickness", "power", "airflow", "pressure",
-			"pressure_type", "speed");
+			"pressure_type", "speed", "equipment_kind", "louver_type", "pricing_louver_type", "recognition_evidence",
+			"attached_valve_kind", "attached_valve_width", "attached_valve_height", "attached_valve_diameter",
+			"attached_valve_count", "attached_valve_cost_included", "fan_set_cost", "attached_valve_control",
+			"attached_valve_material", "attached_valve_thickness", "attached_valve_splice_cost");
 
 	private static final Map<String, Set<String>> HEADERS = Map.ofEntries(
-			Map.entry("name", Set.of("产品名称", "材料名称", "项目名称", "构件名称")),
+			Map.entry("name", Set.of("名称", "产品名称", "材料名称", "项目名称", "构件名称")),
 			Map.entry("engineering_quantity", Set.of("工程量", "总面积", "工程量(㎡)", "工程量（㎡）", "清单总量")),
 			Map.entry("remark", Set.of("备注")), Map.entry("unit", Set.of("单位")),
 			Map.entry("flange", Set.of("法兰方式", "法兰形式")), Map.entry("product_state", Set.of("报价备注", "成品状态", "风管状态")),
@@ -95,6 +98,10 @@ public final class DuctImportService {
 							rows.add(obj("number", r + 1, "cells", cells, "issues", issues));
 					}
 					Map<String, Object> parsed = obj("name", sheet.getSheetName(), "rows", rows);
+					if (sheet.getSheetName().equals(AiQuoteImportService.REVIEW_SHEET_NAME)
+							&& sheet.getRow(0) != null && value(sheet.getRow(0).getCell(AiQuoteImportService.REVIEW_KEY_COLUMN))
+									.equals(AiQuoteImportService.REVIEW_MARKER))
+						parsed.put("auxiliary", true);
 					parsed.putAll(suggest(parsed));
 					parsed.putAll(suggestEquipment(parsed));
 					parsed.putAll(suggestAuto(parsed));
@@ -103,6 +110,7 @@ public final class DuctImportService {
 			}
 			if (sheets.stream().allMatch(s -> list(s.get("rows")).isEmpty()))
 				throw new RuleException("文件没有可读取内容");
+			attachReviewParameters(sheets);
 			return sheets;
 		}
 		catch (RuleException e) {
@@ -111,6 +119,52 @@ public final class DuctImportService {
 		catch (Exception e) {
 			throw new RuleException("无法读取Excel，请确认文件未加密且格式正确");
 		}
+	}
+
+	/** Treat the generated review tab as parameters for its linked main rows, never as additional products. */
+	private static void attachReviewParameters(List<Map<String, Object>> sheets) {
+		var reviews = sheets.stream().filter(sheet -> yes(sheet.get("auxiliary"))).toList();
+		if (reviews.isEmpty()) {
+			boolean linkedMain = sheets.stream().filter(sheet -> s(sheet, "name").equals(AiQuoteImportService.SHEET_NAME))
+				.flatMap(sheet -> list(sheet.get("rows")).stream())
+				.anyMatch(row -> cellText(row, AiQuoteImportService.MAIN_REVIEW_KEY_COLUMN).equals(AiQuoteImportService.REVIEW_KEY_HEADER));
+			if (linkedMain) throw new RuleException("本文件缺少完整的人工核对工作表，请保留整份待核验报价单后导入");
+			return;
+		}
+		var main = sheets.stream().filter(sheet -> s(sheet, "name").equals(AiQuoteImportService.SHEET_NAME)).findFirst()
+			.orElseThrow(() -> new RuleException("人工核对表缺少对应报价主表，请导入完整文件"));
+		Map<String, Map<String, Object>> linked = new LinkedHashMap<>();
+		for (var source : list(main.get("rows"))) {
+			if (n(source.get("number")).intValue() < AiQuoteImportService.DETAIL_START_ROW) continue;
+			if (cellText(source, 0).equals("材料小计")) break;
+			String key = cellText(source, AiQuoteImportService.MAIN_REVIEW_KEY_COLUMN);
+			if (key.isBlank() || linked.putIfAbsent(key, source) != null)
+				throw new RuleException("报价主表第" + source.get("number") + "行核对关联ID缺失或重复，请保留完整产品行");
+		}
+		List<String> keys = new ArrayList<>(EquipmentReview.HEADERS.keySet());
+		Set<String> used = new HashSet<>();
+		for (var review : reviews) {
+			for (var source : list(review.get("rows"))) {
+				if (n(source.get("number")).intValue() < 4) continue;
+				String key = cellText(source, AiQuoteImportService.REVIEW_KEY_COLUMN);
+				Map<String, Object> target = linked.get(key);
+				if (target == null || !used.add(key))
+					throw new RuleException("人工核对第" + source.get("number") + "行关联ID无效或重复，请勿混用不同文件或删除隐藏列");
+				if (!cellText(source, 0).equals(cellText(target, 0)))
+					throw new RuleException("人工核对第" + source.get("number") + "行与主表序号不一致，请核对对应产品");
+				Map<String, Object> attributes = obj();
+				for (int i = 0; i < keys.size(); i++) attributes.put(keys.get(i), cellText(source, i + 5));
+				target.put("review_parameters", attributes);
+				target.put("review_issue", ((List<?>) source.get("issues")).stream()
+						.anyMatch(column -> n(column).intValue() >= 5 && n(column).intValue() < AiQuoteImportService.REVIEW_KEY_COLUMN));
+			}
+		}
+		if (used.size() != linked.size()) throw new RuleException("人工核对表存在遗漏产品，请保留与主表一一对应的完整清单");
+	}
+
+	private static String cellText(Map<String, Object> row, int column) {
+		List<Object> values = cells(row);
+		return column < values.size() ? str(values.get(column)) : "";
 	}
 
 	private String value(Cell cell) {
@@ -149,6 +203,13 @@ public final class DuctImportService {
 		return Normalizer.normalize(value, Normalizer.Form.NFKC).replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
 	}
 
+	private static boolean productHeader(Map<String, Object> mapping, List<Object> cells) {
+		if (!mapping.containsKey("name"))
+			return false;
+		return !header(str(cells.get(n(mapping.get("name")).intValue()))).equals("名称")
+				|| Set.of("spec", "model", "unit", "quantity", "engineering_quantity").stream().anyMatch(mapping::containsKey);
+	}
+
 	public Map<String, Object> suggest(Map<String, Object> sheet) {
 		List<Map<String, Object>> candidates = new ArrayList<>();
 		for (Map<String, Object> row : list(sheet.get("rows")).stream().limit(20).toList()) {
@@ -168,7 +229,7 @@ public final class DuctImportService {
 			}
 			else if (specs.isEmpty() && models.size() == 1)
 				found.put("spec", models.get(0));
-			if (found.containsKey("name"))
+			if (productHeader(found, cells))
 				candidates
 					.add(obj("suggested_mapping", found, "suggested_start_row", n(row.get("number")).intValue() + 1));
 		}
@@ -189,9 +250,9 @@ public final class DuctImportService {
 	}
 
 	public Map<String, Object> suggestEquipment(Map<String, Object> sheet) {
-		Map<String, Set<String>> headers = Map.ofEntries(
-				Map.entry("name", Set.of("产品名称", "设备名称", "材料名称", "项目名称", "构件名称")),
-				Map.entry("spec", Set.of("规格型号", "规格", "型号参数", "规格描述", "规格参数", "技术参数")),
+		Map<String, Set<String>> headers = new LinkedHashMap<>(Map.ofEntries(
+				Map.entry("name", Set.of("名称", "产品名称", "设备名称", "材料名称", "项目名称", "构件名称")),
+				Map.entry("spec", Set.of("规格型号", "规格", "型号参数", "规格描述", "规格参数", "技术参数", "型号/规格")),
 				Map.entry("quantity", Set.of("数量", "设备数量", "产品数量")), Map.entry("unit", Set.of("单位", "计量单位")),
 				Map.entry("remark", Set.of("备注")), Map.entry("engineering_quantity", Set.of("工程量", "总面积", "清单总量")),
 				Map.entry("airflow", Set.of("风量", "风量(m³/h)", "风量(m3/h)")),
@@ -204,7 +265,8 @@ public final class DuctImportService {
 				Map.entry("speed", Set.of("转速", "转速(r/min)", "转速(rpm)")),
 				Map.entry("category", Set.of("品类", "产品类型", "设备类型")), Map.entry("shape", Set.of("管件类型")),
 				Map.entry("flange_material", Set.of("角钢材质", "角铁材质")), Map.entry("flange_size", Set.of("角钢规格", "角铁规格")),
-				Map.entry("flange_grade", Set.of("角钢档位")), Map.entry("flange_meters", Set.of("本行角钢米数", "角钢米数")));
+				Map.entry("flange_grade", Set.of("角钢档位")), Map.entry("flange_meters", Set.of("本行角钢米数", "角钢米数"))));
+		EquipmentReview.HEADERS.forEach((key, label) -> headers.put(key, Set.of(label)));
 		List<Map<String, Object>> candidates = new ArrayList<>();
 		for (var row : list(sheet.get("rows")).stream().limit(30).toList()) {
 			Map<String, Object> mapping = obj();
@@ -216,10 +278,13 @@ public final class DuctImportService {
 				if (at.size() == 1)
 					mapping.put(key, at.get(0));
 			});
-			if (mapping.containsKey("name"))
+			if (productHeader(mapping, normalized))
 				candidates
 					.add(obj("equipment_mapping", mapping, "equipment_start_row", n(row.get("number")).intValue() + 1));
 		}
+		var reviewHeaders = candidates.stream()
+			.filter(c -> map(c.get("equipment_mapping")).containsKey("attached_valve_kind")).toList();
+		if (reviewHeaders.size() == 1) return reviewHeaders.get(0);
 		return candidates.size() == 1 ? candidates.get(0)
 				: obj("equipment_mapping", obj(), "equipment_start_row", null);
 	}
@@ -264,15 +329,21 @@ public final class DuctImportService {
 		String name = get(row, mapping, "name").replaceAll("\\s+", "");
 		String text = String.join("", cells(row).stream().map(QuoteData::str).toList()).replaceAll("\\s+", "");
 		if (text.startsWith("备注：") || text.startsWith("备注:") || text.startsWith("报价说明：") || text.startsWith("报价说明:")
+				|| name.startsWith("备注：") || name.startsWith("备注:") || name.startsWith("报价说明：")
+				|| name.startsWith("报价说明:")
 				|| text.contains("合计"))
 			return "note_or_total";
 		if (!get(row, mapping, "unit").isBlank() || !get(row, mapping, "quantity").isBlank()
 				|| !get(row, mapping, "engineering_quantity").isBlank() || !get(row, mapping, "spec").isBlank()
 				|| ATTRIBUTES.stream().anyMatch(key -> !get(row, mapping, key).isBlank()))
 			return "";
+		if (name.isEmpty() && text.matches("(?:送货人签字|收货人签字|联系方式|车牌|日期)[:：].*"))
+			return "note_or_total";
 		if (text.startsWith("说明") || name.matches("人工[+＋]材料[（(].*[）)][:：]?"))
 			return "note_or_total";
-		if (name.matches("-?\\d+(?:\\.\\d+)?米层|[一二三四五六七八九十百\\d]+层|(?:风管|设备|风阀|风口)部分|.+(?:装置楼|泵房|机房|小间)"))
+		if (name.matches("-?\\d+(?:\\.\\d+)?米层|[一二三四五六七八九十百\\d]+层|\\d+(?:#|号)?(?:栋|幢|楼)|(?:风管|设备|风阀|风口)部分|.+(?:装置楼|泵房|机房|小间)"
+				+ "|(?:\\d+(?:#|号)?[、,，])+\\d+(?:#|号)?(?:栋|幢|楼)(?:地下室)?"
+				+ "|\\d+#楼(?:地下室(?:负?[一二三四五六七八九十百\\d]+层)?|(?:[一二三四五六七八九十百\\d]+层)?[~～至-](?:屋顶|楼顶))"))
 			return "section";
 		return "";
 	}
@@ -293,7 +364,7 @@ public final class DuctImportService {
 		if (s(row, "category").isEmpty() || s(row, "category").equals("风管"))
 			row.put("category", category);
 		if (blank(row.get("engineering_quantity")) && !blank(row.get("quantity"))
-				&& Set.of("㎡", "m2", "m²", "平方米").contains(s(row, "unit")))
+				&& Set.of("㎡", "m2", "m²", "平方米", "平方").contains(s(row, "unit")))
 			row.put("engineering_quantity", row.get("quantity"));
 		if (blank(row.get("quantity")) && !blank(row.get("engineering_quantity"))
 				&& Set.of("台", "个", "只", "套", "件", "组", "樘").contains(s(row, "unit")))
@@ -326,6 +397,10 @@ public final class DuctImportService {
 		for (var sheet : sheets) {
 			String name = s(sheet, "name");
 			var setting = settings.getOrDefault(name, obj());
+			if (yes(sheet.get("auxiliary"))) {
+				sources.add(obj("name", name, "status", "review_parameters", "row_count", 0, "linked_sheet", AiQuoteImportService.SHEET_NAME));
+				continue;
+			}
 			if (yes(setting.get("excluded"))) {
 				String reason = s(setting, "exclude_reason");
 				if (reason.isEmpty() || reason.length() > 1000)
@@ -413,6 +488,10 @@ public final class DuctImportService {
 		for (Map<String, Object> source : list(sheet.get("rows"))) {
 			if (n(source.get("number")).intValue() < start)
 				continue;
+			List<Object> visible = cells(source);
+			if (!visible.isEmpty() && str(visible.get(0)).trim().equals("材料小计")
+					&& get(source, mapping, "name").isBlank() && get(source, mapping, "quantity").isBlank())
+				break;
 			String context = mode.equals("mixed_v1") ? contextKind(source, mapping) : "";
 			if (!context.isEmpty()) {
 				special.add(obj("source_row", source.get("number"), "source_sheet", sheet.get("name"), "kind", context,
@@ -427,8 +506,10 @@ public final class DuctImportService {
 						"note_or_total", "original", source));
 				continue;
 			}
-			String unit = get(source, mapping, "unit").toLowerCase(Locale.ROOT),
-					raw = get(source, mapping, "engineering_quantity"), key = null;
+			String unit = get(source, mapping, "unit").toLowerCase(Locale.ROOT), raw = get(source, mapping, "quantity"),
+					key = null;
+			if (raw.isBlank())
+				raw = get(source, mapping, "engineering_quantity");
 			if (normalized.contains("角码") && Set.of("个", "只", "件", "pcs", "pc").contains(unit))
 				key = "corner_count";
 			else if ((normalized.contains("卡条") || normalized.contains("卡码") || normalized.contains("卡扣"))
@@ -438,19 +519,25 @@ public final class DuctImportService {
 			if (key == null && flange.find() && Set.of("米", "m", "meter", "metre").contains(unit))
 				key = "flange_" + flange.group(1) + "_meters";
 			if (key != null && !mode.equals("equipment_v1")) {
-				BigDecimal quantity = positive(raw, "第" + source.get("number") + "行辅材数量/米数");
+				var fieldIssues = map(source.get("model_field_issues"));
+				boolean pendingQuantity = raw.isBlank()
+						&& (fieldIssues.containsKey("quantity") || fieldIssues.containsKey("engineering_quantity"));
+				String quantity = pendingQuantity ? "" : text(positive(raw, "第" + source.get("number") + "行辅材数量/米数"));
 				if (totals.containsKey(key))
 					throw new RuleException("清单存在多行相同配件汇总，请先合并或明确处理");
-				totals.put(key, text(quantity));
+				totals.put(key, quantity);
 				special.add(obj("source_row", source.get("number"), "source_sheet", sheet.get("name"), "kind", key,
-						"quantity", text(quantity), "original", source));
+						"quantity", quantity, "original", source));
 				continue;
 			}
 			Map<String, Object> row = obj("source_row", source.get("number"), "source_sheet", sheet.get("name"),
-					"original", source);
+					"source_text", desc, "original", source);
 			for (String field : List.of("name", "spec", "quantity", "engineering_quantity", "unit", "remark",
 					"category"))
 				row.put(field, get(source, mapping, field));
+			if (mapping.containsKey("attached_valve_kind"))
+				// Review hints and component inputs must not leak into the fan's parameter parser.
+				row.put("source_text", s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark"));
 			if (mode.equals("duct_v1") && blank(row.get("unit")))
 				row.put("unit", "㎡");
 			if (!mode.equals("equipment_v1") && blank(row.get("category")) && s(row, "name").contains("风管"))
@@ -461,9 +548,23 @@ public final class DuctImportService {
 				if (!v.isEmpty())
 					attributes.put(field, mode.equals("equipment_v1") ? v : attribute(field, v));
 			}
-			boolean issue = ((List<?>) source.get("issues")).stream().anyMatch(v -> mapped.contains(n(v).intValue()));
+			if (source.containsKey("review_parameters")) {
+				EquipmentReview.HEADERS.keySet().forEach(attributes::remove);
+				map(source.get("review_parameters")).forEach((field, value) -> { if (!blank(value)) attributes.put(field, value); });
+				String originalSpec = cellText(source, 23).isBlank() ? cellText(source, 15) : cellText(source, 23);
+				String editedSpec = cellText(source, 3);
+				if (!editedSpec.equals(originalSpec)) {
+					// A visible specification edit invalidates parameters parsed from the old specification.
+					var previous = EquipmentPricingEngine.parseAttributes(obj("name", row.get("name"), "spec", originalSpec));
+					var current = EquipmentPricingEngine.parseAttributes(obj("name", row.get("name"), "spec", editedSpec));
+					for (String field : List.of("model", "airflow", "pressure", "power", "width", "height", "length", "diameter"))
+						if (previous.containsKey(field) || current.containsKey(field)) attributes.remove(field);
+				}
+			}
+			boolean issue = yes(source.get("review_issue")) || ((List<?>) source.get("issues")).stream().anyMatch(v -> mapped.contains(n(v).intValue()));
 			row.putAll(obj("attributes", attributes, "excluded", false, "exclude_reason", "", "source_issue", issue,
 					"source_issue_confirmed", false));
+			EquipmentReview.refresh(row);
 			if (!mode.equals("duct_v1"))
 				autoClassifyRow(row);
 			if (mode.equals("equipment_v1"))

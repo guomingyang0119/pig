@@ -1,5 +1,6 @@
 package com.pig4cloud.pig.admin.controller;
 
+import cn.hutool.core.util.StrUtil;
 import com.pig4cloud.pig.admin.api.dto.RegisterUserDTO;
 import com.pig4cloud.pig.admin.service.SysUserService;
 import com.pig4cloud.pig.common.core.constant.enums.YesNoEnum;
@@ -37,7 +38,14 @@ public class SysRegisterController {
 		if (!YesNoEnum.YES.getCode().equals(ParamResolver.getStr("SITE_REGISTER_ENABLE", YesNoEnum.NO.getCode()))) {
 			return R.failed("系统已关闭注册功能");
 		}
-		return userService.registerUser(userDto);
+		if (userDto == null || StrUtil.isBlank(userDto.getUsername()) || StrUtil.isBlank(userDto.getPassword())) {
+			return R.failed("用户名和密码不能为空");
+		}
+		// 公开注册只接收账号密码，不允许通过请求体占用未经验证的手机号。
+		RegisterUserDTO registerDto = new RegisterUserDTO();
+		registerDto.setUsername(userDto.getUsername());
+		registerDto.setPassword(userDto.getPassword());
+		return userService.registerUser(registerDto);
 	}
 
 	/**

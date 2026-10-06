@@ -108,6 +108,14 @@ class InstallationPricingEngineTests {
 	@Test
 	void latestCatalogResolvesOnlyUnambiguousPreviouslyPendingProducts() {
 		var quote = obj("duct_options", obj());
+		for (String name : List.of("正压送风口", "多叶排烟口", "多叶送风口", "加压送风口")) {
+			assertEquals("four_20", InstallationPricingEngine.autoProject(equipment(name, ""), quote, "贵州"), name);
+			assertEquals("sx_31", InstallationPricingEngine.autoProject(equipment(name, ""), quote, "陕西"), name);
+		}
+		assertEquals("four_16", InstallationPricingEngine.autoProject(equipment("电动阀", ""), quote, "贵州"));
+		assertNull(InstallationPricingEngine.autoProject(equipment("电动阀", ""), quote, "陕西"));
+		assertEquals("four_16", InstallationPricingEngine.autoProject(equipment("蝶阀", ""), quote, "贵州"));
+		assertEquals("sx_23", InstallationPricingEngine.autoProject(equipment("蝶阀", ""), quote, "陕西"));
 		assertEquals("four_16", InstallationPricingEngine.autoProject(equipment("280℃排烟阀", ""), quote, "四川"));
 		assertEquals("sx_23", InstallationPricingEngine.autoProject(equipment("手动对开多叶调节阀", ""), quote, "陕西"));
 		assertEquals("four_16", InstallationPricingEngine.autoProject(equipment("电动对开多叶调节阀", ""), quote, "四川"));
@@ -124,6 +132,100 @@ class InstallationPricingEngineTests {
 		assertEquals("four_25", InstallationPricingEngine.autoProject(equipment("带阀散流器", ""), quote, "云南"));
 		assertEquals("four_18", InstallationPricingEngine.autoProject(equipment("单层百叶带阀风口", ""), quote, "贵州"));
 		assertEquals("four_13", InstallationPricingEngine.autoProject(equipment("轴流风机带防雨百叶", ""), quote, "贵州"));
+		assertEquals("four_20",
+				InstallationPricingEngine.autoProject(equipment("电动多叶加压送风口", "600*（800+250）"), quote, "贵州"));
+		assertEquals("four_18",
+				InstallationPricingEngine.autoProject(equipment("单层防火百叶风口", "800*400"), quote, "贵州"));
+		assertEquals("four_18",
+				InstallationPricingEngine.autoProject(equipment("单层百叶防火送风口", "1800*1000"), quote, "贵州"));
+		assertEquals("four_13", InstallationPricingEngine.autoProject(
+				equipment("PF-3-2#WD-1", "L=950CMHP=41PaN=40W-220V平时贴梁安装DFBZ-2.8"), quote, "贵州"));
+		assertEquals("sx_19", InstallationPricingEngine.autoProject(
+				equipment("JY-3-1#WM-01", "L=33210CMHP=1186PaN=15KW消防SWF-I-8落地安装"), quote, "陕西"));
+		assertEquals("four_16",
+				InstallationPricingEngine.autoProject(equipment("电动泄压阀", "500*1000"), quote, "贵州"));
+		assertEquals("sx_23",
+				InstallationPricingEngine.autoProject(equipment("电动泄压阀", "500*1000"), quote, "陕西"));
+	}
+
+	@Test
+	void louverSetUsesTheReviewedPerItemInstallationPrice() throws IOException {
+		var row = equipment("单层防火百叶风口", "800*400");
+		row.put("unit", "套");
+		row.put("quantity", "2");
+		var quote = obj("pricing_mode", "equipment_v1", "duct_options", obj(), "equipment_options",
+				obj("tax_included", false), "installation_options",
+				obj("included", true, "region", "贵州", "include_auxiliaries", false, "include_site_fee", false),
+				"rows", List.of(row));
+		var result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj()),
+				LocalDate.now());
+		assertTrue(result.issues().isEmpty(), result.issues().toString());
+		var line = list(result.fee().get("lines")).get(0);
+		assertEquals("four_18", line.get("project_id"));
+		assertEquals("个", line.get("unit"));
+		assertEquals("2", line.get("quantity"));
+		assertEquals("40", line.get("quoted_amount"));
+	}
+
+	@Test
+	void multiLeafSupplyAndFireOutletSetsCountAsInstallationItems() throws IOException {
+		var multiLeaf = equipment("电动多叶加压送风口", "600*（800+250）");
+		multiLeaf.put("unit", "套");
+		multiLeaf.put("quantity", "3");
+		var fireOutlet = equipment("防火风口", "800*400");
+		fireOutlet.put("unit", "套");
+		fireOutlet.put("quantity", "2");
+		var quote = obj("pricing_mode", "equipment_v1", "duct_options", obj(), "equipment_options",
+				obj("tax_included", false), "installation_options",
+				obj("included", true, "region", "贵州", "include_auxiliaries", false, "include_site_fee", false),
+				"rows", List.of(multiLeaf, fireOutlet));
+
+		var result = InstallationPricingEngine.calculate(quote, List.of(installationResource()),
+				List.of(obj(), obj()), LocalDate.now());
+
+		assertTrue(result.issues().isEmpty(), result.issues().toString());
+		var lines = list(result.fee().get("lines"));
+		assertEquals("four_20", lines.get(0).get("project_id"));
+		assertEquals("个", lines.get(0).get("unit"));
+		assertEquals("3", lines.get(0).get("quantity"));
+		assertEquals("195", lines.get(0).get("quoted_amount"));
+		assertEquals("four_22", lines.get(1).get("project_id"));
+		assertEquals("个", lines.get(1).get("unit"));
+		assertEquals("2", lines.get(1).get("quantity"));
+		assertEquals("120", lines.get(1).get("quoted_amount"));
+	}
+
+	@Test
+	void electricPressureReliefValveUsesOrdinaryValveInstallationPrice() throws IOException {
+		var row = equipment("电动泄压阀", "500*1000");
+		row.put("quantity", "3");
+		var quote = obj("pricing_mode", "equipment_v1", "duct_options", obj(), "equipment_options",
+				obj("tax_included", false), "installation_options",
+				obj("included", true, "region", "贵州", "include_auxiliaries", false, "include_site_fee", false),
+				"rows", List.of(row));
+
+		var result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj()),
+				LocalDate.now());
+
+		assertTrue(result.issues().isEmpty(), result.issues().toString());
+		var line = list(result.fee().get("lines")).get(0);
+		assertEquals("four_16", line.get("project_id"));
+		assertEquals("风阀", line.get("project_name"));
+		assertEquals("个", line.get("unit"));
+		assertEquals("50", line.get("unit_price"));
+		assertEquals("150", line.get("quoted_amount"));
+
+		map(quote.get("installation_options")).put("region", "陕西");
+		result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj()),
+				LocalDate.now());
+
+		assertTrue(result.issues().isEmpty(), result.issues().toString());
+		line = list(result.fee().get("lines")).get(0);
+		assertEquals("sx_23", line.get("project_id"));
+		assertEquals("套", line.get("unit"));
+		assertEquals("3", line.get("quantity"));
+		assertEquals("55", line.get("unit_price"));
+		assertEquals("165", line.get("quoted_amount"));
 	}
 
 	@Test
@@ -170,6 +272,46 @@ class InstallationPricingEngineTests {
 		assertEquals("four_20", line.get("project_id"));
 		assertEquals("65", line.get("unit_price"));
 		assertEquals("130", line.get("quoted_amount"));
+	}
+
+	@Test
+	void fourRegionStaticBoxUsesSourceQuantityWhenCatalogCountsByItem() throws IOException {
+		var row = obj("name", "静压箱", "spec", "1600×800×800", "remark", "", "category", "设备", "unit", "台",
+				"quantity", "3", "attributes", obj());
+		var quote = obj("pricing_mode", "equipment_v1", "duct_options", obj(), "equipment_options",
+				obj("tax_included", false), "installation_options",
+				obj("included", true, "region", "贵州", "include_auxiliaries", false, "include_site_fee", false),
+				"rows", List.of(row));
+
+		var result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj()),
+				LocalDate.now());
+
+		assertTrue(result.issues().isEmpty(), result.issues().toString());
+		var line = list(result.fee().get("lines")).get(0);
+		assertEquals("four_21", line.get("project_id"));
+		assertEquals("个", line.get("unit"));
+		assertEquals("3", line.get("quantity"));
+		assertEquals("300", line.get("unit_price"));
+		assertEquals("900", line.get("quoted_amount"));
+	}
+
+	@Test
+	void gravityLouverWithValveUsesGravityLouverInstallationPrice() throws IOException {
+		var row = equipment("自垂百叶（带阀）", "800×500");
+		row.put("quantity", "3");
+		var quote = obj("pricing_mode", "equipment_v1", "duct_options", obj(), "equipment_options",
+				obj("tax_included", false), "installation_options",
+				obj("included", true, "region", "贵州", "include_auxiliaries", false, "include_site_fee", false),
+				"rows", List.of(row));
+
+		var result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj()),
+				LocalDate.now());
+
+		assertTrue(result.issues().isEmpty(), result.issues().toString());
+		var line = list(result.fee().get("lines")).get(0);
+		assertEquals("four_19", line.get("project_id"));
+		assertEquals("50", line.get("unit_price"));
+		assertEquals("150", line.get("quoted_amount"));
 	}
 
 	@Test
@@ -257,20 +399,38 @@ class InstallationPricingEngineTests {
 	}
 
 	@Test
-	void siteChargeIsOnlyRequiredAfterTheQuoterSelectsIt() throws IOException {
+	void crossWorkRequiresAnExplicitSiteChargeDecision() throws IOException {
 		var quote = lineSettlementQuote(false);
 		var options = map(quote.get("installation_options"));
-		options.putAll(obj("include_site_fee", false, "height", "8", "cross_work", true, "site_amount", "",
-				"site_note", ""));
+		options.putAll(obj("include_site_fee", false, "height", "8", "cross_work", true,
+				"cross_work_fee_decision", "", "site_amount", "", "site_note", "", "site_waive_reason", ""));
 		var result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj(), obj()),
+				LocalDate.now());
+		assertTrue(result.issues().contains("安装费：交叉施工请确认是否计取现场附加费"));
+		assertEquals("0", result.fee().get("site_amount"));
+
+		options.put("cross_work_fee_decision", "waive");
+		result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj(), obj()),
+				LocalDate.now());
+		assertTrue(result.issues().contains("安装费：交叉施工不计取现场附加费时请填写原因"));
+
+		options.put("site_waive_reason", "合同约定本次不另行计取");
+		result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj(), obj()),
 				LocalDate.now());
 		assertTrue(result.issues().isEmpty(), result.issues().toString());
 		assertEquals("0", result.fee().get("site_amount"));
 
-		options.put("include_site_fee", true);
+		options.putAll(obj("cross_work_fee_decision", "charge", "include_site_fee", true, "site_amount", "",
+				"site_note", "", "site_waive_reason", ""));
 		result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj(), obj()),
 				LocalDate.now());
 		assertTrue(result.issues().contains("安装费：请填写未税现场附加费"));
+
+		options.putAll(obj("site_amount", "300", "site_note", "交叉施工协调及降效费"));
+		result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj(), obj()),
+				LocalDate.now());
+		assertTrue(result.issues().isEmpty(), result.issues().toString());
+		assertEquals("300", result.fee().get("site_amount"));
 	}
 
 	private static Map<String, Object> project(List<Map<String, Object>> projects, String id) {

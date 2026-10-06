@@ -52,13 +52,21 @@ class DuctWorkbookTests {
 	Map<String, Object> body, result;
 
 	void calculate(int count, boolean installation, String flange) throws IOException {
+		calculate(count, installation, flange, null);
+	}
+
+	void calculate(int count, boolean installation, String flange, String actualFlangeMeters) throws IOException {
 		Map<String, Object> catalog = new ObjectMapper().readValue(DuctExportService.asset("duct-catalog-seed.json"),
 				Map.class);
 		List<Map<String, Object>> rows = new ArrayList<>();
-		for (int i = 0; i < count; i++)
-			rows.add(obj("name", "镀锌风管", "spec", "0.75 / 800×320", "category", "风管", "engineering_quantity", "100",
-					"unit", "㎡", "attributes", obj("thickness", "0.75", "diameter", "500", "round_flange_count", "3"),
+		for (int i = 0; i < count; i++) {
+			var attributes = obj("thickness", "0.75", "diameter", "500", "round_flange_count", "3");
+			if (actualFlangeMeters != null)
+				attributes.put("flange_meters", actualFlangeMeters);
+			rows.add(obj("row_id", "row-" + i, "name", "镀锌风管", "spec", "0.75 / 800×320", "category", "风管", "engineering_quantity", "100",
+					"unit", "㎡", "attributes", attributes,
 					"remark", "客户备注", "installation", obj("unit_price", "2.031")));
+		}
 		body = obj("customer", "=1+1", "project", "导出验收工程", "contact", "测试联系人", "quote_date", "2026-09-23", "note",
 				"=HYPERLINK(\"https://example.com\")", "duct_options",
 				obj("area_basis", "net", "product_state", "semi", "shape", "straight", "flange", flange, "zinc_layer",
@@ -79,6 +87,172 @@ class DuctWorkbookTests {
 								"installation_catalog", "status", "published", "body", installCatalog)),
 				obj("formal_template_confirmed", true), LocalDate.of(2026, 9, 23));
 		assertTrue(yes(result.get("formal_ready")), str(result.get("issues")));
+	}
+
+	@Test
+	void actualAngleFlangeHasItsOwnReadableLineCalculation() throws IOException {
+		calculate(1, false, "angle", "12");
+		byte[] review = exporter.write(body, result, "TEST-ANGLE-DETAIL", false,
+				obj("quote_id", "quote-angle", "revision", 1, "family", "family-angle", "version", 1));
+		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(review))) {
+			StringBuilder explanation = new StringBuilder();
+			for (Row row : wb.getSheet("计算明细"))
+				for (Cell cell : row)
+					if (cell.getCellType() == CellType.STRING)
+						explanation.append(cell.getStringCellValue()).append(' ');
+			assertTrue(explanation.toString().contains("角钢法兰基础价/米"));
+			assertTrue(explanation.toString().contains("角钢法兰报价/米"));
+			assertTrue(explanation.toString().contains("按实际米数另列，本行不乘角钢法兰按面积折算系数"));
+			assertTrue(explanation.toString().contains("12米"));
+		}
+	}
+
+	@Test
+	void reviewExportShowsCalculationDetailsForEachPricedLine() throws IOException {
+		calculate(1, true, "round");
+		byte[] review = exporter.write(body, result, "TEST-CALCULATION", false,
+				obj("quote_id", "quote-calculation", "revision", 1, "family", "family-calculation", "version", 1));
+		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(review))) {
+			assertTrue(wb.getSheetAt(0).getRow(9).getCell(12).getStringCellValue()
+				.contains("系统计价逻辑：风管（半成品、直管、圆法兰）"));
+			Sheet details = wb.getSheet("计算明细");
+			assertNotNull(details);
+			assertTrue(details.getRow(0).getCell(0).getStringCellValue().startsWith("镀锌风管"));
+			assertTrue(details.getRow(1).getCell(0).getStringCellValue().startsWith("铁皮材料价/㎡："),
+					"产品名称下一行应直接列出代入数字的算式");
+			assertFalse(details.getRow(1).getCell(0).getStringCellValue().contains("镀锌风管"));
+			StringBuilder text = new StringBuilder();
+			for (Row row : details)
+				for (Cell cell : row)
+					if (cell.getCellType() == CellType.STRING)
+						text.append(cell.getStringCellValue()).append(' ');
+			assertTrue(text.toString().contains("铁皮材料价/㎡"));
+			assertTrue(text.toString().contains("0.75 × "));
+			assertTrue(text.toString().contains("吨价"));
+			assertFalse(text.toString().contains("material_price + processing"), "不能把程序公式原样给用户看");
+			assertTrue(text.toString().contains("圆法兰"));
+			assertTrue(text.toString().contains("直径 500mm ÷ 1000 × 圆法兰材料价"),
+					"独立圆法兰行应写明按实际直径计算的单价");
+			assertTrue(text.toString().contains("按客户清单中的实际数量另列"));
+			assertTrue(text.toString().contains("安装人工"));
+			assertTrue(text.toString().contains("向上取整(0.03 × 1.01)"));
+			assertTrue(text.toString().contains("本行报价"));
+			assertTrue(text.toString().contains("付款系数"));
+			assertTrue(text.toString().contains(s(result, "total")));
+		}
+		var imported = new QuoteReviewImportService().read(review, "校对版.xlsx", "quote-calculation", 1);
+		assertNotNull(imported);
+		var manualLines = list(imported.get("lines"));
+		manualLines.get(0).put("price_changed", true);
+		manualLines.get(0).put("material_amount", "999");
+		result.put("manual_lines", manualLines);
+		byte[] reExport = exporter.write(body, result, "TEST-CALCULATION", false,
+				obj("quote_id", "quote-calculation", "revision", 2, "family", "family-calculation", "version", 1));
+		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(reExport))) {
+			StringBuilder explanation = new StringBuilder();
+			for (Row row : wb.getSheet("计算明细"))
+				for (Cell cell : row)
+					if (cell.getCellType() == CellType.STRING)
+						explanation.append(cell.getStringCellValue()).append(' ');
+			assertTrue(explanation.toString().contains("人工校对"));
+			assertFalse(explanation.toString().contains("铁皮材料价/㎡"), "人工改价后不能再显示旧试算作为该行依据");
+			assertTrue(explanation.toString().contains("直径 500mm ÷ 1000 × 圆法兰材料价"),
+					"未改价的附加行仍应保留原计算明细");
+		}
+		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(exporter.write(body, result, "TEST-CALCULATION", true)))) {
+			assertNull(wb.getSheet("计算明细"));
+		}
+	}
+
+	@Test
+	void equipmentReviewDetailsShowCostPartsAndFinalRowArithmetic() throws IOException {
+		var quote = obj("pricing_mode", "equipment_v1", "customer", "测试客户", "project", "排错工程",
+				"equipment_options", obj("tax_included", true), "rows",
+				List.of(obj("row_id", "valve-1", "name", "防火阀", "spec", "500×500", "unit", "个", "quantity", "2")));
+		var calculated = obj("rows", List.of(obj("status", "priced", "pricing_mode", "equipment_v1",
+				"equipment_kind", "fire", "billing_unit", "个", "billing_quantity", "2", "unit_price", "100",
+				"amount", "200", "unit_cost", "50", "supply_unit_unrounded", "100",
+				"detail", obj("components", obj("frame", "25", "labor", "15", "mechanism", "10"),
+						"gross_margin", "0.4", "tax_factor", "1.2", "price_before_tax", "83.333333333",
+						"price_after_tax", "100", "mechanism_base", "6", "remote_extra", "4",
+						"component_inputs", obj("width", "500", "height", "500"),
+						"component_formulas", obj("frame", "500 * 0.05", "labor", "15",
+								"mechanism", "6 + 4")),
+				"trace", List.of(obj("step", "不含税成本", "expression", "框架+人工", "value", "50")))),
+				"fees", obj(), "issues", List.of(), "subtotal", "200", "before_payment_total", "200",
+				"payment", obj("coefficient", "1.05"), "total", "210", "formal_ready", true);
+		byte[] review = exporter.write(quote, calculated, "TEST-EQUIPMENT-DETAIL", false,
+				obj("quote_id", "quote-equipment", "revision", 2, "family", "family-equipment", "version", 1));
+		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(review))) {
+			Sheet details = wb.getSheet("计算明细");
+			assertNotNull(details);
+			assertTrue(details.getRow(0).getCell(0).getStringCellValue().startsWith("防火阀"));
+			assertTrue(details.getRow(1).getCell(0).getStringCellValue().startsWith("阀体及人工成本/个："));
+			assertTrue(details.getRow(2).getCell(0).getStringCellValue().startsWith("机构与远控成本（本行）："));
+			StringBuilder text = new StringBuilder();
+			for (Row row : details)
+				for (Cell cell : row)
+					if (cell.getCellType() == CellType.STRING)
+						text.append(cell.getStringCellValue()).append(' ');
+			assertTrue(text.toString().contains("阀体框架"));
+			assertTrue(text.toString().contains("(6 + 4) × 2 = 20"));
+			assertTrue(text.toString().contains("25 + 15 + 10 = 50"));
+			assertTrue(text.toString().contains("50 ÷ (1 - 0.4)"));
+			assertTrue(text.toString().contains("向上取整(100元/个 × 2个) = 200"));
+			assertTrue(text.toString().contains("200 × 1.05"));
+			assertFalse(text.toString().contains("CEILING("));
+		}
+	}
+
+	@Test
+	void reviewRemarksShowActualPricingLogicButFormalRemarksStayCustomerFacing() throws IOException {
+		var sources = List.of(
+				obj("row_id", "electric-1", "name", "电动阀", "spec", "500×500", "unit", "个", "quantity", "1",
+						"remark", "客户原备注", "attributes", obj("equipment_kind", "electric_control")),
+				obj("row_id", "fan-1", "name", "轴流风机", "spec", "风量1000 风压100", "unit", "台", "quantity", "1",
+						"remark", "风机原备注", "attributes", obj("equipment_kind", "fan")),
+				obj("row_id", "relief-1", "name", "泄压阀", "spec", "600×400", "unit", "个", "quantity", "1",
+						"remark", "现场复核", "attributes", obj("equipment_kind", "pressure_relief")));
+		var calculatedRows = List.of(
+				obj("status", "priced", "pricing_mode", "equipment_v1", "equipment_kind", "electric_control",
+						"billing_unit", "个", "billing_quantity", "1", "unit_price", "100", "amount", "100", "detail", obj()),
+				obj("status", "priced", "pricing_mode", "equipment_v1", "equipment_kind", "fan", "billing_unit", "台",
+						"billing_quantity", "1", "unit_price", "200", "amount", "200", "detail",
+						obj("selected_fan", obj("model", "SWF-5", "powers", List.of("0.55"), "airflow", "1000",
+								"pressure", "100", "speed", "1450"))),
+				obj("status", "pending", "pricing_mode", "equipment_v1", "equipment_kind", "pressure_relief",
+						"reason", "缺少宽度（mm）", "detail", obj()));
+		var body = obj("pricing_mode", "equipment_v1", "customer", "测试客户", "project", "计价逻辑备注",
+				"quote_date", "2026-09-30", "equipment_options", obj("tax_included", false),
+				"installation_options", obj("included", false), "rows", sources);
+		var reviewResult = obj("rows", calculatedRows, "fees", obj(), "issues", List.of("缺少宽度（mm）"),
+				"subtotal", "300", "total", null, "payment", obj(), "formal_ready", false);
+
+		byte[] review = exporter.write(body, reviewResult, "TEST-LOGIC-REMARK", false,
+				obj("quote_id", "quote-logic", "revision", 1, "family", "family-logic", "version", 1));
+		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(review))) {
+			Sheet sheet = wb.getSheetAt(0);
+			assertEquals("客户原备注\n系统计价逻辑：电动调节阀", sheet.getRow(9).getCell(9).getStringCellValue());
+			assertEquals("选择型号：SWF-5；风机原备注\n系统计价逻辑：风机选型；选中型号：SWF-5",
+					sheet.getRow(10).getCell(9).getStringCellValue());
+			assertEquals("待确认：缺少宽度（mm）；现场复核\n系统识别类型：余压阀；计价状态：待确认",
+					sheet.getRow(11).getCell(9).getStringCellValue());
+		}
+
+		var formalBody = new LinkedHashMap<>(body);
+		formalBody.put("rows", sources.subList(0, 2));
+		var formalResult = obj("rows", calculatedRows.subList(0, 2), "fees", obj(), "issues", List.of(),
+				"subtotal", "300", "total", "300", "payment", obj(), "formal_ready", true);
+		byte[] formal = exporter.write(formalBody, formalResult, "TEST-LOGIC-REMARK", true);
+		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(formal))) {
+			Sheet sheet = wb.getSheetAt(0);
+			assertEquals("客户原备注", sheet.getRow(9).getCell(9).getStringCellValue());
+			assertEquals("选择型号：SWF-5；风机原备注", sheet.getRow(10).getCell(9).getStringCellValue());
+			for (Row row : sheet)
+				for (Cell cell : row)
+					if (cell.getCellType() == CellType.STRING)
+						assertFalse(cell.getStringCellValue().contains("系统计价逻辑："));
+		}
 	}
 
 	@TestFactory
@@ -206,7 +380,9 @@ class DuctWorkbookTests {
 			assertEquals(1000D, product.getCell(8).getNumericCellValue(), "安装待确认时仍保留材料金额");
 			assertEquals(CellType.BLANK, product.getCell(9).getCellType());
 			assertEquals(CellType.BLANK, product.getCell(10).getCellType());
-			assertEquals(IndexedColors.LIGHT_YELLOW.getIndex(), product.getCell(1).getCellStyle().getFillForegroundColor());
+			assertEquals(CellType.BLANK, product.getCell(11).getCellType());
+			assertArrayEquals(new byte[] { (byte) 0xF4, (byte) 0xCC, (byte) 0xCC },
+					((XSSFCellStyle) product.getCell(1).getCellStyle()).getFillForegroundXSSFColor().getRGB());
 			StringBuilder text = new StringBuilder();
 			for (Row row : wb.getSheetAt(0))
 				for (Cell cell : row)
@@ -226,11 +402,12 @@ class DuctWorkbookTests {
 		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(review));
 				ByteArrayOutputStream out = new ByteArrayOutputStream()) {
 			Sheet sheet = wb.getSheetAt(0);
-			assertEquals("安装费用（元）", sheet.getRow(8).getCell(9).getStringCellValue());
-			assertEquals("本行报价（元）", sheet.getRow(8).getCell(10).getStringCellValue());
+			assertEquals("安装单价（元）", sheet.getRow(8).getCell(9).getStringCellValue());
+			assertEquals("安装金额（元）", sheet.getRow(8).getCell(10).getStringCellValue());
+			assertEquals("本行总金额（元）", sheet.getRow(8).getCell(11).getStringCellValue());
 			material = BigDecimal.valueOf(sheet.getRow(9).getCell(8).getNumericCellValue());
-			changedInstallation = BigDecimal.valueOf(sheet.getRow(9).getCell(9).getNumericCellValue()).add(n("100"));
-			sheet.getRow(9).getCell(9).setCellValue(changedInstallation.doubleValue());
+			changedInstallation = BigDecimal.valueOf(sheet.getRow(9).getCell(10).getNumericCellValue()).add(n("100"));
+			sheet.getRow(9).getCell(10).setCellValue(changedInstallation.doubleValue());
 			wb.write(out);
 			completed = out.toByteArray();
 		}
@@ -275,14 +452,14 @@ class DuctWorkbookTests {
 				int materialSummaryRow = 11;
 				int totalRow = materialSummaryRow + (installation ? 2 : 1);
 				assertEquals("设备运费", sheet.getRow(freightRow).getCell(0).getStringCellValue());
-				assertEquals(88D, sheet.getRow(freightRow).getCell(installation ? 10 : 8).getNumericCellValue());
+				assertEquals(88D, sheet.getRow(freightRow).getCell(installation ? 11 : 8).getNumericCellValue());
 				assertEquals("材料小计", sheet.getRow(materialSummaryRow).getCell(0).getStringCellValue());
 				if (installation)
 					assertEquals("安装小计", sheet.getRow(materialSummaryRow + 1).getCell(0).getStringCellValue());
 				assertTrue(sheet.getRow(totalRow).getCell(0).getStringCellValue().contains("合计"));
 				assertNotEquals("设备运费", sheet.getRow(9).getCell(4).getStringCellValue(),
 						"设备运费不能再占用产品明细行");
-				sheet.getRow(freightRow).getCell(installation ? 10 : 8).setCellValue(99D);
+				sheet.getRow(freightRow).getCell(installation ? 11 : 8).setCellValue(99D);
 				wb.write(out);
 				edited = out.toByteArray();
 			}
@@ -290,6 +467,24 @@ class DuctWorkbookTests {
 					"quote-freight-" + installation, 2);
 			assertEquals(0, n("99").compareTo(n(parsed.get("equipment_freight_total"))));
 			assertEquals(0, n(installation ? "1199" : "1099").compareTo(n(parsed.get("before_payment_total"))));
+		}
+	}
+
+	@Test
+	void formalExportRemovesResolvedPendingRemarkFromPreviouslyImportedLines() throws IOException {
+		var quote = obj("pricing_mode", "equipment_v1", "customer", "测试客户", "project", "备注清理",
+				"quote_date", "2026-09-29", "equipment_options", obj("tax_included", false),
+				"installation_options", obj("included", false));
+		var product = obj("name", "混流风机", "thickness", "-", "spec", "SP(8)-ST1-RF", "process", "人工确认",
+				"unit", "台", "quantity", "1", "material_unit", "500", "material_amount", "500", "pending", false,
+				"was_pending", true, "remark", "待确认：缺少风压；客户指定品牌；安装待确认：缺少安装参数\n系统计价逻辑：风机选型；选中型号：SP(8)-ST1-RF");
+		var calculated = obj("manual_lines", List.of(product), "fees",
+				obj("installation", obj("amount", "0", "lines", List.of())), "subtotal", "500", "total", "500",
+				"payment", obj(), "formal_ready", true);
+
+		byte[] formal = exporter.write(quote, calculated, "TEST-RESOLVED-REMARK", true);
+		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(formal))) {
+			assertEquals("客户指定品牌", wb.getSheetAt(0).getRow(9).getCell(9).getStringCellValue());
 		}
 	}
 

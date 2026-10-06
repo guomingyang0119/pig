@@ -26,6 +26,13 @@ spring:
               uri: lb://pig-auth
               predicates:
                 - Path=/auth/**
+            - id: pig-upms-ai-import
+              uri: lb://pig-upms-biz
+              predicates:
+                - Path=/admin/quotation/ai-imports
+              order: -1
+              metadata:
+                response-timeout: 600000
             - id: pig-upms-biz
               uri: lb://pig-upms-biz
               predicates:

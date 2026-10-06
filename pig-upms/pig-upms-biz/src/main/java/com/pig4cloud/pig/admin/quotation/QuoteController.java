@@ -18,9 +18,11 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 public class QuoteController {
 
 	private final QuoteService service;
+	private final AiQuoteImportService aiImporter;
 
-	public QuoteController(QuoteService service) {
+	public QuoteController(QuoteService service, AiQuoteImportService aiImporter) {
 		this.service = service;
+		this.aiImporter = aiImporter;
 	}
 
 	private QuoteService.Actor actor() {
@@ -86,6 +88,43 @@ public class QuoteController {
 		return R.ok(service.settings(actor()));
 	}
 
+	@GetMapping("/product-rules")
+	@HasPermission("quote_view")
+	public R<?> productRules() {
+		return R.ok(service.productRules(actor()));
+	}
+
+	@PostMapping("/product-rules/recommendations")
+	@HasPermission("quote_view")
+	public R<?> productRuleRecommendations(@RequestBody Map<String, Object> data) {
+		return R.ok(service.productRuleRecommendations(actor(), data));
+	}
+
+	@PostMapping("/product-rules/trial")
+	@HasPermission("quote_edit")
+	public R<?> trialProductRule(@RequestBody Map<String, Object> data) {
+		return R.ok(service.trialProductRule(actor(), data));
+	}
+
+	@PostMapping("/product-rules")
+	@HasPermission("quote_edit")
+	public R<?> createProductRule(@RequestBody Map<String, Object> data) {
+		return R.ok(service.createProductRule(actor(), map(data.get("body"))));
+	}
+
+	@PutMapping("/product-rules/{id}")
+	@HasPermission("quote_edit")
+	public R<?> editProductRule(@PathVariable String id, @RequestBody Map<String, Object> data) {
+		return R.ok(service.editProductRule(actor(), id, data));
+	}
+
+	@PostMapping("/product-rules/{id}/{action}")
+	@HasPermission("quote_edit")
+	public R<?> productRuleAction(@PathVariable String id, @PathVariable String action,
+			@RequestBody Map<String, Object> data) {
+		return R.ok(service.productRuleAction(actor(), id, action, data));
+	}
+
 	@PutMapping("/settings")
 	@HasPermission("quote_manage")
 	public R<?> settings(@RequestBody Map<String, Object> data) {
@@ -98,6 +137,37 @@ public class QuoteController {
 		if (file.isEmpty() || file.getSize() > DuctImportService.MAX_BYTES)
 			throw new RuleException("请选择24MB以内的Excel文件");
 		return R.ok(service.upload(actor(), file.getBytes(), file.getOriginalFilename()));
+	}
+
+	@PostMapping("/ai-imports")
+	@HasPermission("quote_edit")
+	public R<?> aiImport(@RequestParam("files") MultipartFile[] files) {
+		QuoteService.Actor owner = actor();
+		List<Map<String, Object>> rows = aiImporter.normalize(files);
+		return R.ok(service.createAiDraft(owner, rows, AiQuoteImportService.sourceSnapshots(files)));
+	}
+
+	@GetMapping("/quotes/{id}/standard-input")
+	@HasPermission("quote_view")
+	public ResponseEntity<byte[]> standardInput(@PathVariable String id) {
+		return ResponseEntity.ok()
+			.contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+			.header(HttpHeaders.CONTENT_DISPOSITION,
+					ContentDisposition.attachment().filename("AI待核验报价单.xlsx", StandardCharsets.UTF_8).build().toString())
+			.header(HttpHeaders.CACHE_CONTROL, "no-store")
+			.body(service.aiStandardWorkbook(actor(), id));
+	}
+
+	@GetMapping("/quotes/{id}/ai-sources/{index}")
+	@HasPermission("quote_view")
+	public ResponseEntity<byte[]> aiSource(@PathVariable String id, @PathVariable int index) {
+		Map<String, Object> source = service.aiSource(actor(), id, index);
+		return ResponseEntity.ok()
+			.contentType(MediaType.parseMediaType(s(source, "media_type")))
+			.header(HttpHeaders.CONTENT_DISPOSITION,
+					ContentDisposition.attachment().filename(s(source, "filename"), StandardCharsets.UTF_8).build().toString())
+			.header(HttpHeaders.CACHE_CONTROL, "no-store")
+			.body((byte[]) source.get("content"));
 	}
 
 	@GetMapping("/quotes")
@@ -137,6 +207,22 @@ public class QuoteController {
 		if (file.isEmpty() || file.getSize() > DuctImportService.MAX_BYTES)
 			throw new RuleException("请选择24MB以内的xlsx校对版");
 		return R.ok(service.previewReviewImport(actor(), id, file.getBytes(), file.getOriginalFilename(), revision));
+	}
+
+	@PostMapping("/quotes/{id}/ai-input-imports")
+	@HasPermission("quote_edit")
+	public R<?> previewAiInputImport(@PathVariable String id, @RequestParam("revision") int revision,
+			@RequestParam("file") MultipartFile file) throws IOException {
+		if (file.isEmpty() || file.getSize() > DuctImportService.MAX_BYTES)
+			throw new RuleException("请选择24MB以内的完整AI待核验报价单");
+		return R.ok(service.previewAiInputImport(actor(), id, file.getBytes(), file.getOriginalFilename(), revision));
+	}
+
+	@PostMapping("/quotes/{id}/ai-input-imports/{importId}/apply")
+	@HasPermission("quote_edit")
+	public R<?> applyAiInputImport(@PathVariable String id, @PathVariable String importId,
+			@RequestBody Map<String, Object> data) {
+		return R.ok(service.applyAiInputImport(actor(), id, importId, data));
 	}
 
 	@PostMapping("/quotes/{id}/review-imports/{importId}/apply")

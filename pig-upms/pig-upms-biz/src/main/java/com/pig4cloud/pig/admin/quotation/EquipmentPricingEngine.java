@@ -16,7 +16,7 @@ import com.pig4cloud.pig.admin.quotation.EquipmentFanSelector.Cost;
  */
 public final class EquipmentPricingEngine {
 
-	public static final String VERSION = "equipment-v6", MIXED_VERSION = "mixed-v6";
+	public static final String VERSION = "equipment-v8", MIXED_VERSION = "mixed-v8";
 
 	public static final Set<String> KINDS = Set.of("fan", "fire", "electric_fire", "electric_control", "manual",
 			"check", "pressure_relief", "multi_leaf", "plate_smoke", "louver", "silencer", "plenum", "elbow",
@@ -70,15 +70,19 @@ public final class EquipmentPricingEngine {
 		if (!blank(attrs.get("equipment_kind")))
 			return s(attrs, "equipment_kind");
 		String name = s(row, "name");
-		if (name.contains("风机") || has("^\\s*(?:HTF|HTFC|SWF|GXF|HL3)[-（(]", name))
+		String modelText = name + " " + s(row, "spec") + " " + s(row, "remark") + " " + s(row, "source_text");
+		if (name.contains("风机")
+				|| has("(?<![A-Z0-9])(?:HTFC?|SWF|GXF|HL3|DFBZ)(?:[-－（(]|\\b)", modelText))
 			return "fan";
 		if (contains(name, "通风器", "换气扇", "排气扇"))
 			return "purchased";
 		String[][] rules = { { "elbow", "消声弯头", "消音弯头" }, { "plenum", "接管箱", "静压箱" },
 				{ "silencer", "消声器", "消音器", "消声静压箱" }, { "plate_smoke", "板式排烟" },
-				{ "multi_leaf", "多叶排烟", "多叶送风口", "正压送风口", "正压送风阀", "组合送风口" }, { "pressure_relief", "余压" },
+				{ "multi_leaf", "多叶排烟", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "正压送风阀", "组合送风口" },
+				{ "pressure_relief", "余压", "泄压阀" },
 				{ "check", "止回" }, { "electric_fire", "电动防火" }, { "fire", "防火阀", "排烟阀", "防烟阀" },
-				{ "electric_control", "电动调节", "电动风量" }, { "manual", "调节阀", "调节风阀" }, { "fan", "风机", "通风机" },
+				{ "electric_control", "电动调节", "电动风量", "电动阀", "电动蝶阀" },
+				{ "manual", "调节阀", "调节风阀", "蝶阀" }, { "fan", "风机", "通风机" },
 				{ "louver", "百叶", "散流器", "检修口", "检修门", "条缝风口", "线形风口" } };
 		for (String[] rule : rules)
 			for (int i = 1; i < rule.length; i++)
@@ -96,7 +100,7 @@ public final class EquipmentPricingEngine {
 			if (v != null && !"".equals(v))
 				a.put(k, v);
 		});
-		String all = s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark");
+		String all = s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark") + " " + s(row, "source_text");
 		Matcher panel = match(DECIMAL + "\\s*[×xX*＊]\\s*[（(]\\s*" + DECIMAL + "\\s*\\+\\s*250\\s*[）)]", all);
 		if (panel.find() && Set.of("multi_leaf", "plate_smoke").contains(classify(row))) {
 			a.putIfAbsent("width", panel.group(1));
@@ -130,7 +134,7 @@ public final class EquipmentPricingEngine {
 				a.putIfAbsent(rule[1], rule[2]);
 		Map<String, String> patterns = new LinkedHashMap<>();
 		patterns.put("airflow", "(?:风量|(?<![A-Z])(?:Q|L)\\s*[:：=＝])\\s*[:：=＝]?\\s*" + DECIMAL);
-		patterns.put("pressure", "(?:全压|静压|风压|(?<![A-Z])(?:P|H)\\s*[:：=＝])\\s*[:：=＝]?\\s*" + DECIMAL);
+		patterns.put("pressure", "(?:全压|静压|风压|CMH\\s*P|(?<![A-Z])(?:P|H))\\s*[:：=＝]?\\s*" + DECIMAL);
 		patterns.put("speed", "(?:转速\\s*[:：=＝]?\\s*|(?<![A-Z])N\\s*[:：=＝]\\s*)" + DECIMAL + "\\s*(?:r/min|rpm|转/分)");
 		patterns.put("thickness", "(?:厚度|板厚|厚)\\s*[:：=＝]?\\s*" + DECIMAL);
 		patterns.put("power", "(\\d+(?:\\.\\d+)?(?:\\s*/\\s*\\d+(?:\\.\\d+)?)?)\\s*(?:kW|千瓦)");
@@ -145,7 +149,7 @@ public final class EquipmentPricingEngine {
 				a.putIfAbsent(key + "_low", pair.group(2));
 		}
 		String modelPattern = classify(row).equals("purchased") ? "\\b[A-Z]{2,}[A-Z\\d]*[-－][A-Z\\d.－-]+"
-				: "\\b(?:HTFC|HTF(?:\\([A-Z]\\))?|SWF|GXF|HL3)[-－A-ZIⅠⅡ\\d.()]*";
+				: "(?<![A-Z0-9])(?:HTFC|HTF(?:\\([A-Z]\\))?|SWF|GXF|HL3|DFBZ)[-－A-ZIⅠⅡ\\d.()]*";
 		Matcher model = match(modelPattern, all);
 		if (!a.containsKey("power")) {
 			Matcher watts = match(DECIMAL + "\\s*W\\b", all);
@@ -210,8 +214,11 @@ public final class EquipmentPricingEngine {
 			mechanism = rate(rates, control + "_control");
 		if (!blank(a.get("mechanism_cost")))
 			mechanism = n(a.get("mechanism_cost"));
-		if (enabled(a.get("remote")) || control.equals("remote"))
-			mechanism = add(mechanism, rate(rates, "remote_extra"));
+		BigDecimal mechanismBase = mechanism, remoteExtra = ZERO;
+		if (enabled(a.get("remote")) || control.equals("remote")) {
+			remoteExtra = rate(rates, "remote_extra");
+			mechanism = add(mechanism, remoteExtra);
+		}
 		parts.put("mechanism", mechanism);
 		BigDecimal splice = ZERO;
 		if (Set.of("fire", "electric_fire", "electric_control", "manual").contains(kind)) {
@@ -233,30 +240,37 @@ public final class EquipmentPricingEngine {
 			throw new RuleException("尺寸或成本参数使阀体成本为负，请核对");
 		Map<String, Object> components = obj();
 		parts.forEach((k, v) -> components.put(k, text(v)));
+		Map<String, Object> componentFormulas = obj();
+		Map<String, Object> expressions = map(catalog.get("valve_expressions"));
+		for (String key : parts.keySet())
+			componentFormulas.put(key, expressions.getOrDefault(key, text(parts.get(key))));
+		if (kind.equals("plate_smoke")) {
+			componentFormulas.put("link", "0（板式不计连杆）");
+			componentFormulas.put("shaft", "0（板式不计圆钢）");
+		}
+		if (kind.equals("check")) {
+			componentFormulas.put("link", "0（止回阀不计连杆）");
+			if (!split)
+				componentFormulas.put("blade", "(" + s(expressions, "blade") + ") × 1.2");
+		}
+		if (kind.equals("multi_leaf") && split)
+			componentFormulas.put("shaft", "(" + s(expressions, "shaft") + ") × 2");
+		componentFormulas.put("mechanism", text(mechanismBase) + " + " + text(remoteExtra));
+		componentFormulas.put("splice", text(splice));
+		if (parts.containsKey("panel"))
+			componentFormulas.put("panel", "(" + text(w) + " + " + s(rates, "panel_edge") + ") × ("
+					+ text(h) + " + " + s(rates, "panel_edge") + ") × " + s(rates, "panel_rate") + " ÷ 1000000");
 		return new Cost(parts.values().stream().reduce(ZERO, QuoteData::add), obj("components", components, "split",
 				split, "groups", text(groups), "blades", text(blades), "price_proxy", proxy ? "对应规格防火阀" : null,
-				"material_prices",
+				"component_inputs", env, "component_formulas", componentFormulas,
+				"mechanism_base", text(mechanismBase), "remote_extra", text(remoteExtra), "material_prices",
 				obj("frame_price", text(n(env.get("frame_price"))), "blade_price", text(n(env.get("blade_price"))))));
 	}
 
 	private static String louverType(Map<String, Object> row, Map<String, Object> a) {
-		if (!blank(a.get("louver_type")))
-			return s(a, "louver_type");
-		String all = s(row, "name") + " " + s(row, "spec"), base = "";
-		for (String[] pair : new String[][] { { "散流", "diffuser" }, { "防雨", "rain" }, { "自垂", "gravity" },
-				{ "门铰", "hinged" }, { "检修", "access" }, { "条缝", "linear" }, { "线形", "linear" }, { "双层", "double" },
-				{ "单层", "single" } })
-			if (all.contains(pair[0])) {
-				base = pair[1];
-				break;
-			}
-		if (base.isEmpty())
-			throw new RuleException("请明确风口类型（单层、双层、散流器等）");
-		if (all.toUpperCase(Locale.ROOT).contains("ABS"))
-			return "abs_" + base + (base.equals("hinged") && all.contains("网") ? "_mesh" : "");
-		if (all.contains("阀") && all.contains("网"))
-			throw new RuleException("同时带阀和网的风口需明确组合成本，不能只套其中一种");
-		return base + (all.contains("阀") ? "_valve" : all.contains("网") ? "_mesh" : "");
+		var recognition = EquipmentReview.louver(row, a);
+		if (!blank(recognition.get("issue"))) throw new RuleException(s(recognition, "issue"));
+		return s(recognition, "louver_type");
 	}
 
 	/**
@@ -272,7 +286,9 @@ public final class EquipmentPricingEngine {
 			throw new RuleException("该产品采用综合面积成本，源表未分解不锈钢用量；请提供已核实的每㎡成本");
 		if (kind.equals("louver")) {
 			String type = louverType(row, a);
-			String pricingType = type.startsWith("gravity") ? "single" + type.substring("gravity".length()) : type;
+			var recognition = EquipmentReview.louver(row, a);
+			String basis = s(recognition, "pricing_louver_type");
+			String pricingType = basis.startsWith("gravity") ? "single" + basis.substring("gravity".length()) : basis;
 			if (!map(catalog.get("louvers")).containsKey(pricingType))
 				throw new RuleException("该风口类型尚无成本依据，请核对类型");
 			List<?> values = (List<?>) map(catalog.get("louvers")).get(pricingType);
@@ -282,10 +298,13 @@ public final class EquipmentPricingEngine {
 				edge = n(130);
 			BigDecimal area = div(mul(add(w, edge), add(h, edge)), 1000000);
 			return new Cost(mul(area, n(a.getOrDefault("area_cost", rate)), factor).max(minimum),
-					obj("area", text(area), "louver_type", type, "pricing_louver_type", pricingType, "minimum_cost",
-							text(minimum)));
+					obj("width", text(w), "height", text(h), "edge", text(edge), "area", text(area),
+						"area_rate", text(n(a.getOrDefault("area_cost", rate))), "area_factor", text(factor),
+						"louver_type", type, "pricing_louver_type", pricingType, "minimum_cost", text(minimum),
+						"pricing_louver_basis", basis, "recognition_evidence", recognition.get("recognition_evidence")));
 		}
 		BigDecimal length = required(a, "length", "长度（mm）");
+		BigDecimal sourceWidth = w, sourceHeight = h;
 		if (kind.equals("silencer")) {
 			w = add(w, mul(n(2), rate(rates, "silencer_edge")));
 			h = add(h, mul(n(2), rate(rates, "silencer_edge")));
@@ -298,16 +317,26 @@ public final class EquipmentPricingEngine {
 				: kind.equals("silencer") ? "silencer_rate" : "plenum_rate");
 		BigDecimal cost = mul(area, n(a.getOrDefault("area_cost", rate))),
 				thickness = n(a.getOrDefault("thickness", ".75"));
-		if (thickness.compareTo(ONE) == 0)
-			cost = div(cost, rate(rates, "thickness_1_factor"));
-		else if (thickness.compareTo(n("1.2")) == 0)
-			cost = div(cost, rate(rates, "thickness_1_2_factor"));
+		BigDecimal thicknessDivisor = ONE, angleDivisor = ONE;
+		if (thickness.compareTo(ONE) == 0) {
+			thicknessDivisor = rate(rates, "thickness_1_factor");
+			cost = div(cost, thicknessDivisor);
+		}
+		else if (thickness.compareTo(n("1.2")) == 0) {
+			thicknessDivisor = rate(rates, "thickness_1_2_factor");
+			cost = div(cost, thicknessDivisor);
+		}
 		else if (thickness.compareTo(n(".75")) != 0)
 			throw new RuleException("该板厚没有已确认的消声设备成本系数");
-		if (s(a, "flange").equals("angle"))
-			cost = div(cost, rate(rates, "angle_factor"));
+		if (s(a, "flange").equals("angle")) {
+			angleDivisor = rate(rates, "angle_factor");
+			cost = div(cost, angleDivisor);
+		}
 		return new Cost(cost,
-				obj("area", text(area), "area_rate", text(n(a.getOrDefault("area_cost", rate))), "layer", layer));
+				obj("width", text(sourceWidth), "height", text(sourceHeight), "length", text(length),
+						"adjusted_width", text(w), "adjusted_height", text(h), "area", text(area),
+						"area_rate", text(n(a.getOrDefault("area_cost", rate))), "layer", layer,
+						"thickness_divisor", text(thicknessDivisor), "angle_divisor", text(angleDivisor)));
 	}
 
 	/** 外购设备必须按标准化型号唯一命中基础价格，同时校验客户单位与价格表单位一致。 */
@@ -346,6 +375,8 @@ public final class EquipmentPricingEngine {
 			return out;
 		}
 		try {
+			if (!blank(row.get("product_rule_issue")))
+				throw new RuleException(s(row, "product_rule_issue"));
 			if (blank(row.get("name")))
 				throw new RuleException("请填写设备名称");
 			if (yes(row.get("source_issue")) && !yes(row.get("source_issue_confirmed")))
@@ -353,11 +384,13 @@ public final class EquipmentPricingEngine {
 			if (catalog == null)
 				throw new RuleException("设备指标尚未发布或存在多个有效指标，请先核对指标版本");
 			BigDecimal qty = required(row, "quantity", "数量");
-			String kind = classify(row);
+			String productRuleType = s(map(map(row.get("_product_rule_resource")).get("body")), "rule_type");
+			boolean customCost = Set.of("combination", "formula").contains(productRuleType);
+			String kind = customCost ? "custom" : classify(row);
 			var a = parseAttributes(row);
-			if (!KINDS.contains(kind))
+			if (!customCost && !KINDS.contains(kind))
 				throw new RuleException("未识别设备类型，请明确本行产品类型");
-			if (!kind.equals("elbow") && !Set.of("台", "个", "只", "套", "件", "组", "樘").contains(s(row, "unit")))
+			if (!customCost && !kind.equals("elbow") && !Set.of("台", "个", "只", "套", "件", "组", "樘").contains(s(row, "unit")))
 				throw new RuleException("设备数量单位应为台、个、只、套、件、组或樘");
 			var rates = map(catalog.get("rates"));
 			var term = list(catalog.get("payment_terms")).stream()
@@ -373,9 +406,13 @@ public final class EquipmentPricingEngine {
 				throw new RuleException("请明确设备是否包含运费");
 			// 风机、阀门、面积类产品和外购设备分别使用各自的成本模型。
 			Cost calculated = null;
-			if (kind.equals("fan")) {
-				if (has("(?:带|附)[^；;\\n]*(?:防火阀|止回阀)", s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark")))
-					throw new RuleException("风机含附带阀门，请明确整套供货配置及成本；不能只报价普通风机");
+			if (productRuleType.equals("formula"))
+				calculated = ProductRuleCatalog.formulaCost(row, catalog);
+			else if (productRuleType.equals("combination"))
+				calculated = ProductRuleCatalog.combinationCost(row, catalog);
+			else if (kind.equals("fan")) {
+				String reviewReason = EquipmentReview.reason(row, a);
+				if (!reviewReason.isBlank()) throw new RuleException(reviewReason);
 				calculated = EquipmentFanSelector.select(row, catalog, a);
 			}
 			else if (map(catalog.get("valves")).containsKey(kind) || kind.equals("pressure_relief"))
@@ -390,7 +427,9 @@ public final class EquipmentPricingEngine {
 				BigDecimal cost = calculated.amount();
 				if (cost.signum() < 0)
 					throw new RuleException("设备成本不能为负");
-				if (kind.equals("fan") && enabled(a.get("explosion"))) {
+				boolean bundle = kind.equals("fan") && EquipmentReview.hasAttachedValve(row, a);
+				if (bundle) detail.put("fan_ordinary_cost", text(cost));
+				if (kind.equals("fan") && enabled(a.get("explosion")) && !(bundle && Boolean.TRUE.equals(EquipmentReview.included(a)))) {
 					BigDecimal ordinary = cost;
 					var tier = list(catalog.get("explosion_tiers")).stream()
 						.filter(t -> t.get("limit") == null || ordinary.compareTo(n(t.get("limit"))) <= 0)
@@ -399,12 +438,46 @@ public final class EquipmentPricingEngine {
 					detail.putAll(obj("ordinary_cost", text(cost), "explosion_factor", tier.get("factor")));
 					cost = mul(cost, n(tier.get("factor")));
 				}
+				if (bundle) {
+					var valveAttributes = EquipmentReview.valveAttributes(a);
+					String valveKind = EquipmentReview.valveKind(row, a);
+					boolean included = Boolean.TRUE.equals(EquipmentReview.included(a));
+					var valveDetail = obj("kind", valveKind, "attributes", valveAttributes,
+							"count_per_fan", a.get("attached_valve_count"), "included", included);
+					if (included) {
+						cost = required(a, "fan_set_cost", "已核实整套不含税成本");
+						valveDetail.put("confirmed_set_cost", text(cost));
+						traces.add(trace("整套成本", "人工核实整套不含税成本已含阀门及适用防爆成本，不再加附阀成本", text(cost)));
+					}
+					else {
+						Cost valve;
+						try { valve = valveCost(valveKind, valveAttributes, catalog); }
+						catch (RuleException e) { throw new RuleException("附带阀门：" + e.getMessage()); }
+						BigDecimal round = s(valveAttributes, "shape").equals("round") ? rate(rates, "round_factor") : ONE;
+						BigDecimal valvePerUnit = mul(valve.amount(), round);
+						BigDecimal valveTotal = mul(valvePerUnit, required(a, "attached_valve_count", "每台风机附阀数量"));
+						detail.put("fan_adjusted_cost", text(cost));
+						valveDetail.putAll(obj("detail", valve.detail(), "ordinary_cost", text(valve.amount()),
+								"round_factor", text(round), "unit_cost", text(valvePerUnit), "cost_per_set", text(valveTotal)));
+						traces.add(trace("附阀成本/套", text(valve.amount()) + " × " + text(round) + "（阀门外形系数） × "
+								+ s(a, "attached_valve_count") + "（每台数量）", text(valveTotal)));
+						traces.add(trace("风机与附阀合计成本", text(cost) + " + " + text(valveTotal), text(add(cost, valveTotal))));
+						cost = add(cost, valveTotal);
+					}
+					detail.put("attached_valve", valveDetail);
+				}
 				out.put("unit_cost", text(cost));
 				base = fraction(cost).divide(fraction(ONE.subtract(rate(rates, "gross_margin"), MC)));
-				traces.add(trace("不含税成本", "本体、机构、电机、面板等按本行适用规则合计", text(cost)));
+				detail.putAll(obj("gross_margin", text(rate(rates, "gross_margin")), "price_before_tax", ftext(base),
+						"tax_factor", text(rate(rates, "tax_factor"))));
+				if (productRuleType.equals("formula"))
+					for (var item : list(detail.get("formula_costs")))
+						traces.add(trace(s(item, "name"), s(item, "expression"), s(item, "amount")));
+				traces.add(trace("不含税成本", productRuleType.equals("formula") ? "自定义成本项目合计（每1报价单位）" : "本体、机构、电机、面板等按本行适用规则合计", text(cost)));
 				traces.add(trace("不含税供货价", "成本 ÷ (1 − 毛利率)", ftext(base)));
 				if (yes(options.get("tax_included")))
 					base = base.multiply(fraction(rates.get("tax_factor")));
+				detail.put("price_after_tax", ftext(base));
 			}
 			else {
 				// 消声弯头采用人工确认面积（或清单㎡数量）乘固定含税单价，避免从不完整尺寸推算错误面积。
@@ -416,7 +489,9 @@ public final class EquipmentPricingEngine {
 				else
 					throw new RuleException("消声弯头请明确按个或㎡计价，避免面积重复乘数量");
 				base = fraction(mul(area, rate(rates, "elbow_taxed_rate")));
-				detail.putAll(obj("area_per_unit", text(area), "fixed_taxed_base", ftext(base)));
+				detail.putAll(obj("area_per_unit", text(area), "fixed_taxed_base", ftext(base),
+						"fixed_taxed_rate", text(rate(rates, "elbow_taxed_rate")),
+						"tax_factor", text(rate(rates, "tax_factor"))));
 				if (!yes(options.get("tax_included")))
 					base = base.divide(fraction(rates.get("tax_factor")));
 				traces.add(trace("消声弯头固定供货价", "人工面积 × 200（含税）；不含税报价除税系数", ftext(base)));

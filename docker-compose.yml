@@ -1,100 +1,209 @@
-# 使用说明 4.0 - 微服务架构版本
-# 1. 使用docker-compose  宿主机不需要配置host来发现
-# 2. 无需修改源码，根目录  docker-compose up 即可
-# 3. 静静等待服务启动
+# 服务器部署版（amd64）
+# 1. 在开发机运行各服务目录中的 buid.bat，生成 amd64 镜像 tar 包。
+# 2. 将 tar 包、docker-compose.yml 和 .env 上传到服务器后执行：docker load -i <镜像.tar>
+# 3. 执行：docker compose up -d
+name: pig
+
 services:
   pig-mysql:
-    build:
-      context: ./db
-    environment:
-      MYSQL_ROOT_HOST: "%"
-      MYSQL_ROOT_PASSWORD: root
-    restart: always
+    image: pig-mysql:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-mysql
-    image: pig-mysql
+    restart: unless-stopped
     command: --lower_case_table_names=1
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
+    volumes:
+      - ./pig_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot --password=\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
     networks:
       - spring_cloud_default
 
   pig-redis:
+    image: pig-redis:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-redis
-    image: registry.cn-hangzhou.aliyuncs.com/dockerhub_mirror/redis
-    restart: always
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - pig_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - spring_cloud_default
 
   pig-register:
-    build:
-      context: ./pig-register
-    environment:
-      MYSQL_HOST: pig-mysql
-    restart: always
+    image: pig-register:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-register
-    image: pig-register
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_HOST: pig-mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: pig_config
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
     ports:
-      - 8848:8848
-      - 9848:9848
-      - 18080:18080
+      - "8848:8848"
+      - "9848:9848"
+      - "18080:18080"
+    depends_on:
+      pig-mysql:
+        condition: service_healthy
     networks:
       - spring_cloud_default
 
   pig-gateway:
-    build:
-      context: ./pig-gateway
-    restart: always
+    image: pig-gateway:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-gateway
-    image: pig-gateway
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_HOST: pig-register
+      NACOS_PORT: 8848
     ports:
-      - 9999:9999
+      - "9999:9999"
+    depends_on:
+      pig-register:
+        condition: service_started
+      pig-redis:
+        condition: service_healthy
     networks:
       - spring_cloud_default
 
   pig-auth:
-    build:
-      context: ./pig-auth
-    restart: always
+    image: pig-auth:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-auth
-    image: pig-auth
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_HOST: pig-register
+      NACOS_PORT: 8848
+    depends_on:
+      pig-register:
+        condition: service_started
+      pig-redis:
+        condition: service_healthy
     networks:
       - spring_cloud_default
 
   pig-upms:
-    build:
-      context: ./pig-upms/pig-upms-biz
-    restart: always
+    image: pig-upms:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-upms
-    image: pig-upms
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_HOST: pig-register
+      NACOS_PORT: 8848
+      MYSQL_HOST: pig-mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: pig
+      MYSQL_USER: root
+      MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+    depends_on:
+      pig-register:
+        condition: service_started
+      pig-redis:
+        condition: service_healthy
     networks:
       - spring_cloud_default
 
   pig-monitor:
-    build:
-      context: ./pig-visual/pig-monitor
-    restart: always
-    image: pig-monitor
+    image: pig-monitor:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-monitor
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_HOST: pig-register
+      NACOS_PORT: 8848
     ports:
-      - 5001:5001
+      - "5001:5001"
+    depends_on:
+      pig-register:
+        condition: service_started
+      pig-redis:
+        condition: service_healthy
     networks:
       - spring_cloud_default
 
   pig-quartz:
-    build:
-      context: ./pig-visual/pig-quartz
-    restart: always
-    image: pig-quartz
+    image: pig-quartz:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-quartz
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_HOST: pig-register
+      NACOS_PORT: 8848
+      MYSQL_HOST: pig-mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: pig
+      MYSQL_USER: root
+      MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
+    depends_on:
+      pig-register:
+        condition: service_started
+      pig-redis:
+        condition: service_healthy
     networks:
       - spring_cloud_default
 
   pig-codegen:
-    build:
-      context: ./pig-visual/pig-codegen
-    restart: always
-    image: pig-codegen
+    image: pig-codegen:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
     container_name: pig-codegen
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_HOST: pig-register
+      NACOS_PORT: 8848
+      MYSQL_HOST: pig-mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: pig
+      MYSQL_USER: root
+      MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
+    depends_on:
+      pig-register:
+        condition: service_started
+      pig-redis:
+        condition: service_healthy
     networks:
       - spring_cloud_default
+
+  pig-ui:
+    image: pig-ui:${PIG_VERSION:-4.1.0}
+    platform: linux/amd64
+    container_name: pig-ui
+    restart: unless-stopped
+    ports:
+      - "${PIG_UI_PORT:-80}:80"
+    depends_on:
+      pig-gateway:
+        condition: service_started
+    networks:
+      - spring_cloud_default
+
+volumes:
+  pig_redis_data:
 
 networks:
   spring_cloud_default:

@@ -13,6 +13,58 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 class EquipmentPricingEngineTests {
 
 	@Test
+	void codedFanNamesUseTheModelAndPerformanceWrittenInTheSpecification() {
+		var dual = obj("name", "PYF-B2-4-1", "spec",
+				"L=35000/24019CMHP=770/338PaN=12/4Kw消防/平时HTF-II-10贴梁安装", "remark", "", "attributes", obj());
+		assertEquals("fan", EquipmentPricingEngine.classify(dual));
+		var dualAttributes = EquipmentPricingEngine.parseAttributes(dual);
+		assertEquals("35000", dualAttributes.get("airflow"));
+		assertEquals("24019", dualAttributes.get("airflow_low"));
+		assertEquals("770", dualAttributes.get("pressure"));
+		assertEquals("338", dualAttributes.get("pressure_low"));
+		assertEquals("12/4", dualAttributes.get("power"));
+		assertEquals("HTF-II-10", dualAttributes.get("model"));
+
+		var wall = obj("name", "PF-3-2#WD-1", "spec", "L=950CMHP=41PaN=40W-220V平时贴梁安装DFBZ-2.8", "remark", "",
+				"attributes", obj());
+		assertEquals("fan", EquipmentPricingEngine.classify(wall));
+		var wallAttributes = EquipmentPricingEngine.parseAttributes(wall);
+		assertEquals("950", wallAttributes.get("airflow"));
+		assertEquals("41", wallAttributes.get("pressure"));
+		assertEquals("0.04", wallAttributes.get("power"));
+		assertEquals("DFBZ-2.8", wallAttributes.get("model"));
+	}
+
+	@Test
+	void mainFanPathChoosesTheSmallestQualifiedOperatingPoint() throws IOException {
+		Map<String, Object> catalog = new ObjectMapper()
+			.readValue(DuctExportService.asset("equipment-catalog-seed.json"), Map.class);
+		var selected = EquipmentFanSelector.select(obj(), catalog,
+				obj("model", "SWF-I-5", "airflow", "4896", "pressure", "382", "power", "1.1"));
+		var fan = map(selected.detail().get("selected_fan"));
+		assertEquals("SWF-5", fan.get("model"));
+		assertEquals(0, n(((List<?>) fan.get("powers")).get(0)).compareTo(n("5.5")));
+		assertEquals(0, n(fan.get("size")).compareTo(n("5")));
+		assertEquals(0, n(fan.get("airflow")).compareTo(n("11342")));
+		assertEquals(0, n(fan.get("pressure")).compareTo(n("960")));
+	}
+
+	@Test
+	void productAliasesMapToTheirExistingPricingTypes() {
+		for (String name : List.of("正压送风口", "多叶排烟口", "多叶送风口", "加压送风口"))
+			assertEquals("multi_leaf", EquipmentPricingEngine.classify(obj("name", name, "attributes", obj())), name);
+		assertEquals("electric_control",
+				EquipmentPricingEngine.classify(obj("name", "电动阀", "attributes", obj())));
+		assertEquals("electric_control",
+				EquipmentPricingEngine.classify(obj("name", "电动蝶阀", "attributes", obj())));
+		assertEquals("manual", EquipmentPricingEngine.classify(obj("name", "蝶阀", "attributes", obj())));
+		assertEquals("pressure_relief",
+				EquipmentPricingEngine.classify(obj("name", "电动泄压阀", "attributes", obj())));
+		assertEquals("electric_fire",
+				EquipmentPricingEngine.classify(obj("name", "电动防火阀", "attributes", obj())));
+	}
+
+	@Test
 	void exhaustFansArePurchasedProducts() {
 		assertEquals("purchased", EquipmentPricingEngine.classify(obj("name", "吸顶式排气扇", "attributes", obj())));
 	}
@@ -29,6 +81,19 @@ class EquipmentPricingEngineTests {
 		assertEquals(0, plain.amount().compareTo(gravity.amount()));
 		assertEquals("gravity", gravity.detail().get("louver_type"));
 		assertEquals("single", gravity.detail().get("pricing_louver_type"));
+	}
+
+	@Test
+	void remoteValveRecordsTheSameMechanismBreakdownUsedInCost() throws IOException {
+		Map<String, Object> catalog = new ObjectMapper()
+				.readValue(DuctExportService.asset("equipment-catalog-seed.json"), Map.class);
+		var detail = EquipmentPricingEngine.valveCost("fire",
+				obj("width", "500", "height", "500", "control", "remote"), catalog).detail();
+		assertTrue(n(detail.get("remote_extra")).signum() > 0);
+		assertEquals(0, n(map(detail.get("components")).get("mechanism"))
+				.compareTo(add(n(detail.get("mechanism_base")), n(detail.get("remote_extra")))));
+		assertEquals(s(detail, "mechanism_base") + " + " + s(detail, "remote_extra"),
+				s(map(detail.get("component_formulas")), "mechanism"));
 	}
 
 	@Test
@@ -109,6 +174,10 @@ class EquipmentPricingEngineTests {
 			else {
 				var expected = new LinkedHashMap<>(map(c.get("expected")));
 				expected.put("engine_version", EquipmentPricingEngine.VERSION);
+				// v7 replaces the blanket bundle rejection with actionable input checks.
+				for (var expectedRow : list(expected.get("rows")))
+					if (s(expectedRow, "reason").equals("风机含附带阀门，请明确整套供货配置及成本；不能只报价普通风机"))
+						expectedRow.put("reason", "风机含附带阀门，缺少或需核对：阀门宽度和高度（mm），圆阀则填写直径；每台风机附阀数量（正整数）；风机成本是否已含阀（是/否）。补齐后重新导入或保存，再试算。");
 				compare(expected, result, "result");
 			}
 		}));

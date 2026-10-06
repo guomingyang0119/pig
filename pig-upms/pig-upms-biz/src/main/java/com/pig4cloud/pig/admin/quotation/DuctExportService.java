@@ -15,11 +15,18 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 /** Fills the approved customer template; internal price/rule snapshots never enter it. */
 public final class DuctExportService {
 
-	public static final String TEMPLATE_VERSION = "review-roundtrip-20260928-v6";
+	public static final String TEMPLATE_VERSION = "review-roundtrip-20261006-v11";
 
 	static final String REVIEW_METADATA_SHEET = "_系统回导";
 
 	static final String REVIEW_METADATA_MAGIC = "PIG_QUOTE_REVIEW_V1";
+
+	private static final byte[] PENDING_FILL_RGB = { (byte) 0xF4, (byte) 0xCC, (byte) 0xCC };
+
+	static void pendingFill(CellStyle style) {
+		((XSSFCellStyle) style).setFillForegroundColor(new XSSFColor(PENDING_FILL_RGB, null));
+		style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+	}
 
 	public static byte[] asset(String name) {
 		try (InputStream in = DuctExportService.class.getResourceAsStream("/quotation/" + name)) {
@@ -74,7 +81,7 @@ public final class DuctExportService {
 	}
 
 	/** 正式含安装模板增加本行总金额列，并把原备注列及跨列版式向右扩展一列。 */
-	private static void expandFormalInstallationSheet(XSSFSheet sheet) {
+	static void expandFormalInstallationSheet(XSSFSheet sheet) {
 		int totalColumn = 11, remarkColumn = 12;
 		sheet.setColumnWidth(remarkColumn, sheet.getColumnWidth(totalColumn));
 		sheet.setColumnWidth(totalColumn, sheet.getColumnWidth(10));
@@ -103,6 +110,31 @@ public final class DuctExportService {
 		literal(sheet, "M9", "备注");
 	}
 
+	static void addLogo(XSSFWorkbook wb, XSSFSheet sheet) {
+		XSSFDrawing drawing = sheet.createDrawingPatriarch();
+		drawing.getCTDrawing()
+			.setTwoCellAnchorArray(new org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTTwoCellAnchor[0]);
+		drawing.getCTDrawing()
+			.setOneCellAnchorArray(new org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTOneCellAnchor[0]);
+		drawing.getCTDrawing()
+			.setAbsoluteAnchorArray(new org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTAbsoluteAnchor[0]);
+		int logo = wb.addPicture(asset("keqing-logo.png"), Workbook.PICTURE_TYPE_PNG);
+		XSSFClientAnchor anchor = new XSSFClientAnchor();
+		anchor.setCol1(0);
+		anchor.setRow1(0);
+		double width = 118, height = 104;
+		int col = 0, rowIndex = 0;
+		while (width >= sheet.getColumnWidthInPixels(col))
+			width -= sheet.getColumnWidthInPixels(col++);
+		while (height >= sheet.getRow(rowIndex).getHeightInPoints() * 96 / 72)
+			height -= sheet.getRow(rowIndex++).getHeightInPoints() * 96 / 72;
+		anchor.setCol2(col);
+		anchor.setDx2((int) (width * Units.EMU_PER_PIXEL));
+		anchor.setRow2(rowIndex);
+		anchor.setDy2((int) (height * Units.EMU_PER_PIXEL));
+		drawing.createPicture(anchor, logo);
+	}
+
 	public byte[] write(Map<String, Object> body, Map<String, Object> result, String identifier, boolean formal) {
 		return write(body, result, identifier, formal, obj());
 	}
@@ -127,8 +159,7 @@ public final class DuctExportService {
 			Sheet sheet = wb.createSheet("报价草稿");
 			String[] headers = { "序号", "产品名称", "规格", "工程量(㎡)", "综合单价", "行金额", "状态", "待确认原因/备注" };
 			CellStyle red = wb.createCellStyle();
-			red.setFillForegroundColor(IndexedColors.ROSE.getIndex());
-			red.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+			pendingFill(red);
 			CellStyle wrap = wb.createCellStyle();
 			wrap.setWrapText(true);
 			literal(sheet, "A1", "报价草稿 · " + identifier);
@@ -201,10 +232,19 @@ public final class DuctExportService {
 
 	static String equipmentSpecification(Map<String, Object> row, Map<String, Object> result) {
 		var point = map(map(result.get("detail")).get("selected_fan"));
-		if (!point.isEmpty())
-			return s(point, "model") + "；功率"
+		if (!point.isEmpty()) {
+			String fan = s(point, "model") + "；功率"
 					+ String.join("/", ((List<?>) point.get("powers")).stream().map(QuoteData::str).toList()) + "kW；风量"
 					+ s(point, "airflow") + "m³/h；风压" + s(point, "pressure") + "Pa；转速" + s(point, "speed") + "r/min";
+			var valve = map(map(result.get("detail")).get("attached_valve"));
+			if (!valve.isEmpty()) {
+				var a = map(valve.get("attributes"));
+				String size = s(a, "shape").equals("round") ? "Φ" + s(a, "width") : s(a, "width") + "×" + s(a, "height");
+				fan += "；附" + EquipmentReview.display("attached_valve_kind", s(valve, "kind")) + " " + size
+						+ "mm，每台" + s(valve, "count_per_fan") + "个";
+			}
+			return fan;
+		}
 		String value = s(row, "spec");
 		var a = map(result.getOrDefault("attributes", row.get("attributes")));
 		if (value.isEmpty()) {
@@ -346,11 +386,23 @@ public final class DuctExportService {
 	private List<Map<String, Object>> lines(Map<String, Object> body, Map<String, Object> result,
 			boolean installation, boolean includePending) {
 		List<Map<String, Object>> manual = list(result.get("manual_lines"));
-		if (!manual.isEmpty())
-			return manual.stream()
+		if (!manual.isEmpty()) {
+			List<Map<String, Object>> exported = calculationMetadata(body, result, manual.stream()
 				.filter(line -> includePending || !yes(line.get("pending")))
-				.map(line -> (Map<String, Object>) new LinkedHashMap<>(line))
-				.toList();
+				.map(line -> {
+					Map<String, Object> copy = new LinkedHashMap<>(line);
+					copy.put("remark", stripReviewLogic(s(copy, "remark")));
+					if (installation)
+						copy.put("installation_unit", installationUnit(copy.get("installation_amount"), copy.get("quantity")));
+					if (!includePending && !yes(copy.get("pending")) && yes(copy.get("was_pending")))
+						copy.put("remark", resolvedRemark(s(copy, "remark")));
+					return copy;
+				})
+				.toList());
+			if (includePending)
+				appendReviewPricingLogic(body, result, exported);
+			return exported;
+		}
 		List<Map<String, Object>> lines = new ArrayList<>(), sources = list(body.get("rows")),
 				rows = list(result.get("rows"));
 		Map<Integer, Map<String, Object>> installationRows = new HashMap<>();
@@ -428,23 +480,174 @@ public final class DuctExportService {
 				lines.add(materialOnly(obj("name", "角钢法兰", "thickness", "-", "spec", map(r.get("selected_flange")).get("name"),
 						"process", "角钢法兰", "unit", "米", "quantity", r.get("flange_meters"), "material_unit",
 						r.get("flange_unit_price"), "material_amount", r.get("flange_amount"), "remark",
-						"含角钢法兰；按客户实际米数计价；不再乘1.72"), installation));
+						"含角钢法兰；按客户实际米数计价；不再乘1.72", "_calculation_source_index", i,
+						"_calculation_kind", "actual_flange"), installation));
 			if (r.get("round_flange_amount") != null)
 				lines.add(materialOnly(obj("name", "圆法兰", "thickness", "-", "spec", "Φ" + s(r, "round_flange_diameter") + "mm",
 						"process", "圆法兰", "unit", "个", "quantity", r.get("round_flange_count"), "material_unit",
 						r.get("round_flange_unit_price"), "material_amount", r.get("round_flange_amount"), "remark",
-						"按客户清单数量计价"), installation));
+						"按客户清单数量计价", "_calculation_source_index", i,
+						"_calculation_kind", "round_flange"), installation));
 		}
 		for (Map<String, Object> item : list(result.get("accessory_items")))
 			lines.add(materialOnly(obj("name", item.get("name"), "thickness", "-", "spec", "按客户清单实际数量", "process", "共板法兰配件", "unit",
 					item.get("unit"), "quantity", item.get("quantity"), "material_unit", item.get("unit_price"),
-					"material_amount", item.get("amount"), "remark", "含角码卡扣；按整单实际数量计价"), installation));
+					"material_amount", item.get("amount"), "remark", "含角码卡扣；按整单实际数量计价",
+					"_calculation_kind", "whole_quote_item", "_base_unit_price", item.get("base_unit_price"),
+					"_area_factor", item.get("area_factor"), "_tax_factor", item.get("tax_factor")), installation));
 		for (Map<String, Object> item : list(result.get("aggregate_flanges")))
 			lines.add(materialOnly(obj("name", s(item, "size") + "#角钢法兰", "thickness", "-", "spec", item.get("name"), "process",
 					"角钢法兰", "unit", "米", "quantity", item.get("meters"), "material_unit", item.get("unit_price"),
-					"material_amount", item.get("amount"), "remark", "含角钢法兰；按整单实际米数计价；不再乘1.72"), installation));
+					"material_amount", item.get("amount"), "remark", "含角钢法兰；按整单实际米数计价；不再乘1.72",
+					"_calculation_kind", "whole_quote_item", "_base_unit_price", item.get("base_unit_price"),
+					"_area_factor", item.get("area_factor"), "_tax_factor", item.get("tax_factor")), installation));
 		lines.addAll(independentInstallationLines(result, installation));
+		if (includePending)
+			appendReviewPricingLogic(body, result, lines);
 		return lines;
+	}
+
+	private static void appendReviewPricingLogic(Map<String, Object> body, Map<String, Object> result,
+			List<Map<String, Object>> lines) {
+		List<Map<String, Object>> sources = list(body.get("rows")), calculated = list(result.get("rows"));
+		Map<String, Integer> sourceIndexes = new HashMap<>();
+		for (int i = 0; i < sources.size(); i++)
+			if (!s(sources.get(i), "row_id").isEmpty())
+				sourceIndexes.put(s(sources.get(i), "row_id"), i);
+		for (Map<String, Object> line : lines) {
+			Integer index = sourceIndexes.get(s(line, "source_row_id"));
+			if (index == null && line.get("_calculation_source_index") != null)
+				index = n(line.get("_calculation_source_index")).intValue();
+			Map<String, Object> source = index != null && index < sources.size() ? sources.get(index) : obj();
+			Map<String, Object> row = index != null && index < calculated.size() ? calculated.get(index) : obj();
+			String logic = reviewPricingLogic(line, source, row);
+			if (logic.isEmpty())
+				continue;
+			String disclosure = s(row, "status").equals("pending")
+					? "系统识别类型：" + logic + "；计价状态：待确认"
+					: "系统计价逻辑：" + logic;
+			String remark = stripReviewLogic(s(line, "remark"));
+			line.put("remark", remark.isEmpty() ? disclosure : remark + "\n" + disclosure);
+		}
+	}
+
+	private static String reviewPricingLogic(Map<String, Object> line, Map<String, Object> source,
+			Map<String, Object> row) {
+		String calculationKind = s(line, "_calculation_kind"), process = s(line, "process");
+		if (calculationKind.equals("actual_flange"))
+			return "角钢法兰（按本行实际米数）";
+		if (calculationKind.equals("round_flange"))
+			return "圆法兰（按客户数量）";
+		if (calculationKind.equals("whole_quote_item"))
+			return s(line, "name") + (process.equals("角钢法兰") ? "（按整单实际米数）" : "（按整单实际数量）");
+		String kind = s(row, "equipment_kind");
+		if (kind.isEmpty() && !source.isEmpty())
+			kind = EquipmentPricingEngine.classify(source);
+		if (!kind.isEmpty()) {
+			String label = equipmentLogicLabel(kind, row);
+			if (kind.equals("fan")) {
+				String model = s(map(map(row.get("detail")).get("selected_fan")), "model");
+				if (!model.isEmpty())
+					label += "；选中型号：" + model;
+			}
+			return label;
+		}
+		boolean duct = !source.isEmpty() && (s(source, "category").contains("风管") || s(source, "name").contains("风管")
+				|| !s(row, "effective_flange").isEmpty() || !s(row, "selected_shape").isEmpty());
+		if (duct) {
+			String state = Map.of("semi", "半成品", "finished", "成品")
+				.getOrDefault(s(row, "effective_product_state"), "风管");
+			String shape = Map.of("straight", "直管", "irregular", "异形件", "semi_unspecified", "不区分直管/异形件")
+				.getOrDefault(s(row, "selected_shape"), "");
+			String flange = Map.of("common", "共板法兰", "angle", "角钢法兰", "round", "圆法兰")
+				.getOrDefault(s(row, "effective_flange"), process);
+			return "风管（" + String.join("、", List.of(state, shape, flange).stream().filter(v -> !v.isEmpty()).toList()) + "）";
+		}
+		if (!source.isEmpty())
+			return !s(source, "category").isEmpty() ? s(source, "category")
+					: !s(source, "name").isEmpty() ? "未识别产品（" + s(source, "name") + "）" : "未识别产品";
+		if (process.equals("安装"))
+			return "安装费（" + s(line, "name") + "）";
+		if (process.equals("整单汇总"))
+			return s(line, "name");
+		return "";
+	}
+
+	private static String equipmentLogicLabel(String kind, Map<String, Object> row) {
+		if (kind.equals("louver")) {
+			String type = s(map(row.get("detail")), "louver_type");
+			String basis = s(map(row.get("detail")), "pricing_louver_basis");
+			if (!basis.isBlank() && !basis.equals(type))
+				return EquipmentReview.display("louver_type", type) + "；计价采用" + EquipmentReview.display("pricing_louver_type", basis);
+			boolean abs = type.startsWith("abs_");
+			String base = type.replaceFirst("^abs_", "").replaceFirst("_(?:valve|mesh)$", "");
+			String label = Map.of("gravity", "自垂百叶风口", "diffuser", "散流器", "rain", "防雨百叶风口",
+					"hinged", "门铰式百叶风口", "access", "检修口", "linear", "条缝/线形风口", "double", "双层百叶风口",
+					"single", "单层百叶风口").getOrDefault(base, "百叶风口/散流器");
+			return (abs ? "ABS " : "") + label
+					+ (type.endsWith("_valve") ? "（带阀）" : type.endsWith("_mesh") ? "（带网）" : "");
+		}
+		return Map.ofEntries(Map.entry("fan", "风机选型"), Map.entry("purchased", "外购设备"),
+				Map.entry("elbow", "消声弯头"), Map.entry("plenum", "静压箱"), Map.entry("silencer", "消声器"),
+				Map.entry("plate_smoke", "板式排烟口"), Map.entry("multi_leaf", "正压送风口（多叶类）"),
+				Map.entry("pressure_relief", "余压阀"), Map.entry("check", "止回阀"),
+				Map.entry("electric_fire", "电动防火阀"), Map.entry("fire", "防火阀"),
+				Map.entry("electric_control", "电动调节阀"), Map.entry("manual", "调节阀"))
+			.getOrDefault(kind, kind);
+	}
+
+	private static String stripReviewLogic(String remark) {
+		return Arrays.stream(remark.split("\\R", -1))
+			.filter(line -> !line.trim().startsWith("系统计价逻辑：") && !line.trim().startsWith("系统识别类型："))
+			.collect(java.util.stream.Collectors.joining("\n")).strip();
+	}
+
+	private static List<Map<String, Object>> calculationMetadata(Map<String, Object> body,
+			Map<String, Object> result, List<Map<String, Object>> manualLines) {
+		Map<String, Integer> sourceIndexes = new HashMap<>();
+		var sources = list(body.get("rows"));
+		for (int i = 0; i < sources.size(); i++)
+			if (!s(sources.get(i), "row_id").isEmpty())
+				sourceIndexes.put(s(sources.get(i), "row_id"), i);
+		var calculated = list(result.get("rows"));
+		Integer currentSource = null;
+		for (var line : manualLines) {
+			Integer index = sourceIndexes.get(s(line, "source_row_id"));
+			if (index != null)
+				currentSource = index;
+			if (currentSource != null && currentSource < calculated.size()) {
+				var row = calculated.get(currentSource);
+				if (s(line, "name").equals("角钢法兰") && !blank(row.get("flange_amount"))
+						&& s(line, "quantity").equals(s(row, "flange_meters")))
+					line.putAll(obj("_calculation_source_index", currentSource, "_calculation_kind", "actual_flange"));
+				else if (s(line, "name").equals("圆法兰") && !blank(row.get("round_flange_amount"))
+						&& s(line, "quantity").equals(s(row, "round_flange_count")))
+					line.putAll(obj("_calculation_source_index", currentSource, "_calculation_kind", "round_flange"));
+			}
+			if (!s(line, "_calculation_kind").isEmpty())
+				continue;
+			for (String key : List.of("accessory_items", "aggregate_flanges"))
+				for (var item : list(result.get(key))) {
+					String name = key.equals("accessory_items") ? s(item, "name") : s(item, "size") + "#角钢法兰";
+					String quantity = key.equals("accessory_items") ? s(item, "quantity") : s(item, "meters");
+					if (s(line, "name").equals(name) && s(line, "quantity").equals(quantity))
+						line.putAll(obj("_calculation_kind", "whole_quote_item", "_base_unit_price",
+								item.get("base_unit_price"), "_area_factor", item.get("area_factor"),
+								"_tax_factor", item.get("tax_factor")));
+				}
+		}
+		return manualLines;
+	}
+
+	private static String resolvedRemark(String remark) {
+		List<String> kept = new ArrayList<>();
+		for (String part : remark.split("；")) {
+			String text = part.trim();
+			if (!text.isEmpty() && !text.startsWith("待确认：") && !text.startsWith("安装待确认：")
+					&& !text.startsWith("待确定：") && !text.startsWith("安装待确定："))
+				kept.add(text);
+		}
+		return String.join("；", kept);
 	}
 
 	private static Map<String, Object> materialOnly(Map<String, Object> line, boolean installation) {
@@ -491,7 +694,8 @@ public final class DuctExportService {
 				lines.add(obj("name", s(item, "name") + "安装", "spec", item.get("project_name"), "process", "安装", "unit",
 						item.get("unit"), "quantity", item.get("quantity"), "material_unit", null, "material_amount", null,
 						"installation_unit", installationUnit(item.get("quoted_amount"), item.get("quantity")),
-						"installation_amount", item.get("quoted_amount"), "line_total", item.get("quoted_amount"), "remark",
+						"installation_amount", item.get("quoted_amount"), "line_total", item.get("quoted_amount"),
+						"installation_extra_index", item.get("extra_index"), "remark",
 						(taxed ? "本项安装费含税并单独向上取整" : "本项安装费不含税并单独向上取整")
 								+ (blank(item.get("note")) ? "" : "；" + s(item, "note"))));
 			}
@@ -524,7 +728,8 @@ public final class DuctExportService {
 			return;
 		var freight = map(map(result.get("fees")).get("equipment_freight"));
 		String status = s(freight, "status");
-		if (freight.isEmpty() || status.equals("not_applicable") || status.equals("pending") && !includePending)
+		if (freight.isEmpty() || status.equals("not_applicable")
+				|| status.equals("pending") && (!includePending || !s(freight, "basis").equals("manual_order")))
 			return;
 		Object amount = freight.get("amount");
 		boolean included = yes(freight.get("included_in_rows"));
@@ -607,42 +812,14 @@ public final class DuctExportService {
 					wb.removeSheetAt(i);
 			if (review) {
 				wb.setSheetName(wb.getSheetIndex(sheet), "报价校对版");
-				literal(sheet, "C1", "报 价 校 对 版（待确认）");
 			}
-			if (installation && review) {
-				literal(sheet, "J9", "安装费用（元）");
-				literal(sheet, "K9", "本行报价（元）");
-			}
-			else if (installation)
+			if (installation)
 				expandFormalInstallationSheet(sheet);
-			XSSFDrawing drawing = sheet.createDrawingPatriarch();
-			drawing.getCTDrawing()
-				.setTwoCellAnchorArray(
-						new org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTTwoCellAnchor[0]);
-			drawing.getCTDrawing()
-				.setOneCellAnchorArray(
-						new org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTOneCellAnchor[0]);
-			drawing.getCTDrawing()
-				.setAbsoluteAnchorArray(
-						new org.openxmlformats.schemas.drawingml.x2006.spreadsheetDrawing.CTAbsoluteAnchor[0]);
-			int logo = wb.addPicture(asset("keqing-logo.png"), Workbook.PICTURE_TYPE_PNG);
-			XSSFClientAnchor anchor = new XSSFClientAnchor();
-			anchor.setCol1(0);
-			anchor.setRow1(0);
-			// Locate the bottom-right corner from pixel dimensions; offsets must never be
-			// negative.
-			double width = 118, height = 104;
-			int col = 0, rowIndex = 0;
-			while (width >= sheet.getColumnWidthInPixels(col))
-				width -= sheet.getColumnWidthInPixels(col++);
-			while (height >= sheet.getRow(rowIndex).getHeightInPoints() * 96 / 72)
-				height -= sheet.getRow(rowIndex++).getHeightInPoints() * 96 / 72;
-			anchor.setCol2(col);
-			anchor.setDx2((int) (width * Units.EMU_PER_PIXEL));
-			anchor.setRow2(rowIndex);
-			anchor.setDy2((int) (height * Units.EMU_PER_PIXEL));
-			drawing.createPicture(anchor, logo);
+			addLogo(wb, sheet);
 			List<Map<String, Object>> lines = new ArrayList<>(lines(body, result, installation, review));
+			var freight = map(map(result.get("fees")).get("equipment_freight"));
+			lines.removeIf(line -> s(line, "process").equals("设备运费") && (yes(freight.get("included_in_rows"))
+					|| yes(line.get("pending")) && !s(freight, "basis").equals("manual_order")));
 			appendEquipmentFreightLine(lines, result, installation, review);
 			if (lines.isEmpty() || (!review && result.get("total") == null))
 				throw new RuleException("正式报价没有明细或总额未确认");
@@ -653,8 +830,8 @@ public final class DuctExportService {
 			List<Map<String, Object>> detailLines = lines.stream()
 				.filter(line -> !s(line, "process").equals("设备运费"))
 				.toList();
-			int columns = installation ? review ? 12 : 13 : 10;
-			int amountColumn = installation ? review ? 10 : 11 : 8;
+			int columns = installation ? 13 : 10;
+			int amountColumn = installation ? 11 : 8;
 			int freightRows = equipmentFreightLine == null ? 0 : 1;
 			int delta = detailLines.size() + freightRows - 6;
 			CellStyle[] styles = new CellStyle[columns];
@@ -680,8 +857,7 @@ public final class DuctExportService {
 			for (int c = 0; c < columns; c++) {
 				CellStyle pending = wb.createCellStyle();
 				pending.cloneStyleFrom(styles[c]);
-				pending.setFillForegroundColor(IndexedColors.LIGHT_YELLOW.getIndex());
-				pending.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+				pendingFill(pending);
 				pendingStyles.put(c, pending);
 			}
 			for (int c = 7; c <= amountColumn; c++) {
@@ -704,11 +880,8 @@ public final class DuctExportService {
 				int row = i + 9;
 				line.put("_visible_row", row + 1);
 				String[] keys = installation
-						? review
-								? new String[] { "name", "thickness", "spec", "process", "unit", "quantity", "material_unit",
-										"material_amount", "installation_amount", "line_total", "remark" }
-								: new String[] { "name", "thickness", "spec", "process", "unit", "quantity", "material_unit",
-										"material_amount", "installation_unit", "installation_amount", "line_total", "remark" }
+						? new String[] { "name", "thickness", "spec", "process", "unit", "quantity", "material_unit",
+								"material_amount", "installation_unit", "installation_amount", "line_total", "remark" }
 						: new String[] { "name", "thickness", "spec", "process", "unit", "quantity", "material_unit",
 								"material_amount", "remark" };
 				cell(sheet, row, 0).setCellValue(i + 1);
@@ -745,7 +918,13 @@ public final class DuctExportService {
 			for (String coord : installation ? List.of("H3", "I3") : List.of("G3", "H3"))
 				literal(sheet, coord, "");
 			int end = 8 + detailLines.size(), summaryRow = end + 1;
-			Object displayedTotal = result.get("total") == null ? result.get("subtotal") : result.get("total");
+			boolean materialPending = detailLines.stream().anyMatch(line -> !Set.of("安装", "整单汇总")
+					.contains(s(line, "process")) && (blank(line.get("material_unit")) || blank(line.get("material_amount"))));
+			var installationFee = map(map(result.get("fees")).get("installation"));
+			boolean installationPending = installation && (s(installationFee, "status").equals("pending")
+					|| detailLines.stream().anyMatch(line -> blank(line.get("installation_amount"))));
+			Object displayedTotal = materialPending || installationPending
+					|| equipmentFreightLine != null && yes(equipmentFreightLine.get("pending")) ? null : result.get("total");
 			if (equipmentFreightLine != null) {
 				prepareEquipmentFreightSummaryRow(sheet, summaryRow, summaryRow + 1, columns, amountColumn);
 				literal(sheet, "A" + (summaryRow + 1), "设备运费");
@@ -756,34 +935,22 @@ public final class DuctExportService {
 				summaryRow++;
 			}
 			literal(sheet, "A" + (summaryRow + 1), "材料小计");
-			number(cell(sheet, summaryRow, amountColumn), result.get("subtotal"));
+			number(cell(sheet, summaryRow, amountColumn), materialPending ? null : result.get("subtotal"));
 			summaryRow++;
 			if (installation) {
 				literal(sheet, "A" + (summaryRow + 1), "安装小计");
-				number(cell(sheet, summaryRow, amountColumn), map(map(result.get("fees")).get("installation")).get("amount"));
+				number(cell(sheet, summaryRow, amountColumn), installationPending ? null : installationFee.get("amount"));
 				summaryRow++;
 			}
 			int totalRow = summaryRow, uppercase = totalRow + 1;
-			if (review)
-				literal(sheet, "A" + (totalRow + 1), result.get("total") == null ? "已确定小计（待确认项未计入）" : "校对版合计");
-			else
-				literal(sheet, "A" + (totalRow + 1), "价税合计");
+			literal(sheet, "A" + (totalRow + 1), "价税合计");
 			number(cell(sheet, totalRow, amountColumn), displayedTotal);
-			if (s(body, "pricing_mode").equals("equipment_v1")) {
-				Cell totalCell = cell(sheet, totalRow, amountColumn);
-				CellStyle integer = wb.createCellStyle();
-				integer.cloneStyleFrom(totalCell.getCellStyle());
-				integer.setDataFormat(wb.createDataFormat().getFormat("0"));
-				totalCell.setCellStyle(integer);
-			}
-			if (review)
-				literal(sheet, "A" + (uppercase + 1), "校对版金额大写");
-			cell(sheet, uppercase, 3).setCellValue(blank(displayedTotal) ? "" : upperMoney(n(displayedTotal)));
+			literal(sheet, "D" + (uppercase + 1), blank(displayedTotal) ? "" : upperMoney(n(displayedTotal)));
 			List<String> notes = notes(body, result);
 			if (review)
 				notes.add(0, installation
-						? "校对版说明：黄色项目仍待确认；已计算的材料金额会保留，安装费用按本行总额填写，本行报价在回导时重新计算。"
-						: "校对版说明：黄色项目仍待确认，单价和金额留空且未计入已确定小计；本文件可编辑，人工补充后请留存最终版本。");
+						? "校对版说明：红色项目仍待确认；材料和安装分别全部确认后显示对应小计，整单确认后显示合计。请填写安装金额，本行总金额在回导时重新计算。"
+						: "校对版说明：红色项目仍待确认；材料全部确认后显示材料小计，整单确认后显示合计。本文件可编辑，补充后可导回系统。");
 			for (int i = 0; i < 5; i++) {
 				int r = uppercase + 2 + i;
 				Cell cell = cell(sheet, r, 0);
@@ -807,8 +974,10 @@ public final class DuctExportService {
 			sheet.getPrintSetup().setFitWidth((short) 1);
 			sheet.getPrintSetup().setFitHeight((short) (lines.size() <= 12 ? 1 : 0));
 			wb.setPrintArea(0, 0, columns - 1, 0, uppercase + 6);
-			if (review)
+			if (review) {
+				QuoteCalculationDetails.addSheet(wb, body, result, lines, installation);
 				reviewMetadata(wb, lines, context, installation);
+			}
 			wb.write(out);
 			return out.toByteArray();
 		}
@@ -837,8 +1006,7 @@ public final class DuctExportService {
 			Cell target = cell(sheet, row, c);
 			CellStyle pending = wb.createCellStyle();
 			pending.cloneStyleFrom(target.getCellStyle());
-			pending.setFillForegroundColor(IndexedColors.LIGHT_YELLOW.getIndex());
-			pending.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+			pendingFill(pending);
 			target.setCellStyle(pending);
 		}
 	}
@@ -849,7 +1017,7 @@ public final class DuctExportService {
 		String[][] properties = { { "format", REVIEW_METADATA_MAGIC }, { "quote_id", s(context, "quote_id") },
 				{ "revision", s(context, "revision") }, { "family", s(context, "family") },
 				{ "version", s(context, "version") }, { "template_version", TEMPLATE_VERSION },
-				{ "visible_sheet", "报价校对版" }, { "column_count", installation ? "12" : "10" } };
+				{ "visible_sheet", "报价校对版" }, { "column_count", installation ? "13" : "10" } };
 		for (int i = 0; i < properties.length; i++) {
 			cell(metadata, i, 0).setCellValue(properties[i][0]);
 			cell(metadata, i, 1).setCellValue(properties[i][1]);
