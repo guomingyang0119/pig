@@ -1,3 +1,5 @@
+﻿# 报价系统本机启动入口：按依赖顺序启动Redis、注册中心、业务服务、认证、网关和报价页面。
+# -Service可只启动指定组件，-Build先重新打包；进程标识和日志保存在work/local中。
 [CmdletBinding()]
 param(
     [ValidateSet('all', 'redis', 'register', 'admin', 'auth', 'gateway', 'ui')]
@@ -18,6 +20,7 @@ if (-not $nacosUsernameMatch.Success -or -not $nacosPasswordMatch.Success) {
 $nacosUsername = $nacosUsernameMatch.Groups[1].Value.Trim()
 $nacosPassword = $nacosPasswordMatch.Groups[1].Value.Trim()
 
+# 读取本机注册中心配置中的连接字段，并优先应用同名环境变量覆盖。
 function Get-RegisterValue([string]$Key) {
     $line = Get-Content -LiteralPath (Join-Path $projectRoot 'pig-register/src/main/resources/application.properties') |
         Where-Object { $_.StartsWith($Key + '=') } | Select-Object -First 1
@@ -31,6 +34,7 @@ function Get-RegisterValue([string]$Key) {
     })
 }
 
+# 检测本机端口是否已监听，用于复用已有服务及等待启动，不等价于业务健康检查。
 function Test-LocalPort([int]$Port) {
     $client = New-Object Net.Sockets.TcpClient
     try {
@@ -39,8 +43,9 @@ function Test-LocalPort([int]$Port) {
     } catch { return $false } finally { $client.Dispose() }
 }
 
+# 等待Nacos配置服务、gRPC与认证可用后再启动依赖它的报价服务。
 function Wait-RegistryReady {
-    # Nacos can bind its HTTP port before the config service and gRPC are ready.
+    # Nacos的HTTP端口可能先打开，仍需等配置服务和gRPC完整就绪。
     $deadline = (Get-Date).AddSeconds(100)
     while ((Get-Date) -lt $deadline) {
         try {
@@ -59,8 +64,9 @@ function Wait-RegistryReady {
     throw "Registry is not ready to serve configuration. Check $logDirectory/register.out.log"
 }
 
+# 等待应用健康状态为UP，确认报价服务依赖的数据库、Redis和服务发现已就绪。
 function Wait-ApplicationReady([string]$Name, [int]$Port) {
-    # Spring opens the TCP port before database, Redis and service discovery are fully ready.
+    # Spring可能先打开TCP端口，数据库、Redis和服务发现仍需通过健康检查确认。
     $uri = "http://127.0.0.1:$Port/actuator/health"
     $deadline = (Get-Date).AddSeconds(180)
     while ((Get-Date) -lt $deadline) {
@@ -76,6 +82,7 @@ function Wait-ApplicationReady([string]$Name, [int]$Port) {
     throw "$Name opened port $Port but did not become healthy. Check $logDirectory/$Name.out.log"
 }
 
+# 等待报价前端HTTP入口可访问，便于启动脚本结束后直接打开工作台。
 function Wait-UiReady {
     $deadline = (Get-Date).AddSeconds(60)
     while ((Get-Date) -lt $deadline) {
@@ -91,6 +98,8 @@ function Wait-UiReady {
     throw "ui opened port 8888 but did not become ready. Check $logDirectory/ui.out.log"
 }
 
+# 启动单个后台组件，临时注入环境变量后恢复当前进程环境，并记录PID、路径和启动时间。
+# 端口已有服务时复用；新进程退出或超时未监听时提示查看日志。
 function Start-LocalService([string]$Name, [int]$Port, [string]$Executable, [string[]]$Arguments,
                             [string]$WorkingDirectory, [hashtable]$EnvironmentValues) {
     if (Test-LocalPort $Port) { Write-Host "$Name : port $Port already listening; reusing existing process."; return }
@@ -119,6 +128,7 @@ function Start-LocalService([string]$Name, [int]$Port, [string]$Executable, [str
     throw "$Name has not opened port $Port yet. Check $logDirectory/$Name.out.log"
 }
 
+# 构建包含报价业务所在upms模块及启动依赖，只打包，此处不执行自动化测试。
 if ($Build) {
     Push-Location $projectRoot
     try {
@@ -130,6 +140,7 @@ if ($Build) {
 $javaExecutable = (Get-Command java -ErrorAction Stop).Source
 $mysqlUser = Get-RegisterValue 'db.user'
 $mysqlPassword = Get-RegisterValue 'db.password'
+# 系统权限库使用pig，报价数据使用独立quotationsystem库；两者复用本机配置账号。
 $environmentValues = @{
     NACOS_HOST = '127.0.0.1'; NACOS_PORT = '8848'
     MYSQL_HOST = '127.0.0.1'; MYSQL_PORT = '3306'; MYSQL_DB = 'pig'
@@ -149,6 +160,7 @@ if ($Service -in @('all','redis')) {
     Start-LocalService 'redis' 6379 $redisExecutable @('--bind','127.0.0.1','--port','6379','--protected-mode','yes','--appendonly','yes','--save','60','1') $redisDirectory @{}
 }
 
+# 服务按注册中心→报价业务→认证→网关启动，每项健康后再启动下一项。
 $services = @(
     @{ Name='register'; Port=8848; Jar='pig-register/target/pig-register.jar' },
     @{ Name='admin'; Port=4000; Jar='pig-upms/pig-upms-biz/target/pig-upms-biz.jar' },

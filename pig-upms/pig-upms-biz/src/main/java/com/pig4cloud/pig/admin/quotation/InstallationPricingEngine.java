@@ -15,8 +15,10 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
  */
 public final class InstallationPricingEngine {
 
+	// 安装规则版本用于历史计算追溯，改变结算口径时需重新试算。
 	public static final String VERSION = "installation-v5";
 
+	// 安装支持的计量单位；只有已确认的少量产品允许等量使用“台/个/套”，其余不能自动换算。
 	private static final Set<String> UNITS = Set.of("㎡", "台", "个", "套");
 
 	/** 新版整单安装选项优先；仅为兼容旧报价，缺少该字段时才读取风管或设备中的旧开关。 */
@@ -39,14 +41,17 @@ public final class InstallationPricingEngine {
 		return yes(equipment.get("tax_included"));
 	}
 
+	// 移除常见省区后缀后按指标地区匹配，不扩展到没有价格依据的省区。
 	private static String region(Object value) {
 		return str(value).replaceFirst("省$", "").replaceFirst("壮族自治区$", "");
 	}
 
+	// 仅把常见平方米写法规整为㎡，不进行台、个、套之间的普遍换算。
 	private static String unit(Object value) {
 		return Set.of("m2", "m²", "平方米", "平米", "平方").contains(str(value)) ? "㎡" : str(value);
 	}
 
+	// 安装数量必须正数；人工销售单价、辅材价和普通现场附加费允许明确填 0，但不接受空值或负值。
 	private static BigDecimal amount(Object value, String label, boolean positive) {
 		if (blank(value))
 			throw new RuleException("请填写" + label);
@@ -56,10 +61,12 @@ public final class InstallationPricingEngine {
 		return number;
 	}
 
+	// 明确类别优先；未填类别且名称含风管时按风管工程量读取。
 	private static boolean duct(Map<String, Object> row) {
 		return s(row, "category").equals("风管") || (blank(row.get("category")) && s(row, "name").contains("风管"));
 	}
 
+	// 安装识别同时参考名称、规格和备注中的用途、结构与范围说明。
 	private static String description(Map<String, Object> row) {
 		return s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark");
 	}
@@ -68,6 +75,7 @@ public final class InstallationPricingEngine {
 		return Arrays.stream(words).anyMatch(text::contains);
 	}
 
+	// 只有明确“远控/远程控制”文字才增加适用的远程机构安装费，电动名称本身不表示远控。
 	private static boolean explicitRemoteControl(Map<String, Object> row) {
 		return contains(description(row), "远控", "远程控制");
 	}
@@ -79,10 +87,12 @@ public final class InstallationPricingEngine {
 				"法兰随风管安装", "法兰随管安装");
 	}
 
+	// 按㎡供货的消声弯头安装沿用面积工程量；有个数的弯头仍走每个安装项目。
 	private static boolean areaPricedSilencerElbow(Map<String, Object> row) {
 		return s(row, "name").contains("消声弯头") && unit(row.get("unit")).equals("㎡");
 	}
 
+	// 安装用法兰形式来自行属性或明确法兰文字，供面积弯头与风管项目匹配。
 	private static String flange(Map<String, Object> row) {
 		String value = str(attr(row, "flange")), text = description(row);
 		if (value.equals("angle") || contains(text, "角钢法兰", "角铁法兰"))
@@ -111,6 +121,7 @@ public final class InstallationPricingEngine {
 		return null;
 	}
 
+	// 按壁式、方形、管道/油烟及消防送排风用途区分地区项目，陕西信息不足时返回待选择。
 	private static String fanProject(Map<String, Object> row, boolean shaanxi) {
 		String text = description(row), name = s(row, "name");
 		if (name.contains("壁式"))
@@ -120,6 +131,7 @@ public final class InstallationPricingEngine {
 		return shaanxi ? contains(text, "消防", "排烟", "送风", "排风") ? "sx_19" : null : "four_13";
 	}
 
+	// 人工参数、指标值、材料行值依次取首个非空项，明确填 0 仍视为有效输入。
 	private static Object first(Object... values) {
 		for (Object v : values)
 			if (!blank(v))
@@ -127,6 +139,7 @@ public final class InstallationPricingEngine {
 		return null;
 	}
 
+	// 行内实际成品状态和描述优先于安装设置及整单默认，防止半成品安装价误用于成品。
 	private static String state(Map<String, Object> row, Map<String, Object> quote, Map<String, Object> entry) {
 		if (!blank(attr(row, "product_state")))
 			return str(attr(row, "product_state"));
@@ -314,6 +327,7 @@ public final class InstallationPricingEngine {
 				throw new RuleException("安装单位与所选项目不一致，不能自动换算");
 			if (isDuct && state.equals("finished") && !unit.equals("㎡"))
 				throw new RuleException("成品风管安装单价必须按每㎡填写");
+			// 只对已核对项目开放计数等量例外：四地区静压箱台→个、指定风口套→个、陕西电动泄压阀个→套。
 			boolean staticBoxCountEquivalent = projectId.equals("four_21") && s(row, "name").contains("静压箱")
 					&& unit.equals("个") && unit(row.get("unit")).equals("台");
 			String rowName = s(row, "name");
@@ -325,6 +339,7 @@ public final class InstallationPricingEngine {
 					&& unit(row.get("unit")).equals("套");
 			boolean pressureReliefCountEquivalent = projectId.equals("sx_23") && rowName.contains("电动泄压阀")
 					&& unit.equals("套") && unit(row.get("unit")).equals("个");
+			// 人工安装数量优先；风管取原工程量总面积，设备取原数量，不乘材料净面积系数。
 			Object quantity = entry.get("quantity");
 			if (blank(quantity)) {
 				if (areaElbow)
@@ -355,6 +370,7 @@ public final class InstallationPricingEngine {
 				if (str(power).contains("/"))
 					throw new RuleException("双速风机请确认安装计费功率或手填安装单价");
 				BigDecimal kw = amount(power, "安装计费功率kW", true);
+				// 功率单位 kW；小于 1.5 为首档，1.5～17.5 含端点为中档，大于 17.5 为末档。
 				int band = kw.compareTo(n("1.5")) < 0 ? 0 : kw.compareTo(n("17.5")) <= 0 ? 1 : 2;
 				price = n(bands.get(band));
 				out.putAll(obj("power", text(kw), "power_band", band));
@@ -363,6 +379,7 @@ public final class InstallationPricingEngine {
 				price = n(project.get("price"));
 			BigDecimal basePrice = price, remotePrice = ZERO;
 			Map<String, Object> remoteProject = null;
+			// 远控附加仅用于四地区的自动设备安装价；手填价格视为已确认整行口径，不再自动加机构安装费。
 			if (!manual && s(project, "kind").equals("equipment") && InstallationCatalog.FOUR_REGIONS.contains(region)
 					&& explicitRemoteControl(row) && !projectId.equals("four_17")) {
 				remoteProject = list(catalog.get("projects")).stream()
@@ -421,6 +438,7 @@ public final class InstallationPricingEngine {
 		return out;
 	}
 
+	// 安装汇总结果及阻止正式报价的问题列表；逐行已计算金额可展示，但有问题时汇总金额保持空。
 	public record Calculation(Map<String, Object> fee, List<String> issues) {
 	}
 
@@ -466,6 +484,7 @@ public final class InstallationPricingEngine {
 			line.put("row_index", i);
 			lines.add(line);
 		}
+		// 独立安装项目仅增加安装费用，使用 extra_index 标记，不占材料清单行号。
 		var extra = list(quote.get("installation_items"));
 		for (int i = 0; i < extra.size(); i++) {
 			var e = extra.get(i);
@@ -482,6 +501,7 @@ public final class InstallationPricingEngine {
 		if (priced.isEmpty())
 			issues.add("安装费：没有已确认的安装项目");
 		boolean includesTax = taxIncluded(quote);
+		// 安装指标是未税销售价，含税订单乘 1.01、不含税乘 1，不再除设备毛利率。
 		BigDecimal taxFactor = includesTax ? n("1.01") : ONE;
 		BigDecimal labor = sum(priced, "amount"), auxiliaries = priced.stream()
 			.filter(l -> l.get("auxiliary") != null)
@@ -514,6 +534,7 @@ public final class InstallationPricingEngine {
 		catch (RuleException e) {
 			issues.add("安装费：" + e.getMessage());
 		}
+		// 现场附加费为整单金额且只加一次：含税另乘 1.01 向上取整；不含税保留录入金额的小数。
 		BigDecimal siteTaxed = mul(site, taxFactor), siteQuoted = includesTax
 				? siteTaxed.setScale(0, RoundingMode.CEILING) : site;
 		BigDecimal untaxed = add(labor, auxiliaries, site), taxed = mul(untaxed, taxFactor),
@@ -536,6 +557,7 @@ public final class InstallationPricingEngine {
 		return new Calculation(fee, issues);
 	}
 
+	// 缺指标或旧安装数据等整单级问题统一返回待确认，保留明确原因而不视为零费用。
 	private static Calculation pending(Map<String, Object> fee, String reason, String prefix) {
 		fee.putAll(obj("amount", null, "status", "pending", "reason", reason));
 		return new Calculation(fee, new ArrayList<>(List.of(prefix + reason)));
@@ -561,6 +583,7 @@ public final class InstallationPricingEngine {
 			issues.add("设备运费：" + reason);
 			return;
 		}
+		// 门槛按 CEILING((材料小计+地区试算运费+安装费)×付款系数) 判断，达到含等于门槛。
 		BigDecimal calculated = n(freight.get("calculated_amount"));
 		BigDecimal trialBeforePayment = add(n(result.get("subtotal")), calculated, n(installation.get("amount")));
 		BigDecimal trialTotal = mul(trialBeforePayment, n(term.get("coefficient"))).setScale(0, RoundingMode.CEILING);
@@ -574,6 +597,7 @@ public final class InstallationPricingEngine {
 			return;
 		}
 		EquipmentPricingEngine.discardEquipmentFreightPlan(freight);
+		// 低于门槛才读取人工整单设备运费；明确填 0 有效，该金额不反向影响已经完成的门槛判断。
 		Object entered = map(quote.get("equipment_options")).get("freight_amount");
 		if (blank(entered)) {
 			String reason = "整单试算销售额低于8000元，请填写整单设备运费（可填0）";
@@ -601,6 +625,7 @@ public final class InstallationPricingEngine {
 	@SuppressWarnings("unchecked")
 	public static Map<String, Object> finalizeOrder(Map<String, Object> quote, Map<String, Object> result,
 			List<Map<String, Object>> resources, boolean supplyOnly, LocalDate day) {
+		// 混合报价子组仅返回供货结果，安装、门槛与付款等到恢复原清单顺序后再统一计算。
 		if (supplyOnly)
 			return result;
 		var installation = calculate(quote, resources, list(result.get("rows")), day);
@@ -640,6 +665,7 @@ public final class InstallationPricingEngine {
 			BigDecimal equipmentFreightAmount = yes(equipmentFreight.get("included_in_rows"))
 					|| blank(equipmentFreight.get("amount")) ? ZERO : n(equipmentFreight.get("amount"));
 			before = add(n(result.get("subtotal")), equipmentFreightAmount, n(installation.fee().get("amount")));
+			// 最终付款调整额与取整差额分别保存：付款调整按未取整总额计算，最终报价再向上取整到元。
 			BigDecimal unrounded = mul(before, n(term.get("coefficient")));
 			total = unrounded.setScale(0, RoundingMode.CEILING);
 			payment = unrounded.subtract(before, MC);

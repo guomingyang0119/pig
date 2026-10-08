@@ -1,4 +1,5 @@
 @echo off
+rem Build and start local quotation services, then open the web page.
 cd /d "%~dp0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Start-Local.ps1" -Build
 if errorlevel 1 (

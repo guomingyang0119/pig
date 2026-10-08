@@ -1,16 +1,20 @@
-// All uploads and quote writes use the isolated Java/H2 verification server.
+// 整份 Excel 多工作表导入验收：逐表表头、来源顺序、未知产品保留及原计价结果。
+// 上传和报价写入只适用于本机隔离 Java/H2 预览；WORKBOOK_SAMPLE 可额外指定已准备的客户样本。
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const base = 'http://127.0.0.1:18763', out = path.join(__dirname, 'test-output');
+// 直接调用隔离报价接口并核对 HTTP 状态，读取 data 包装；写请求沿用测试资源 revision。
 async function api(p, method = 'GET', body) {
   const response = await fetch(base + '/admin/quotation' + p, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const json = await response.json(); assert.equal(response.status, 200, JSON.stringify(json)); return json.data;
 }
+// 浏览器流程依序执行，页面错误集中收集；无论断言成功或失败都在 finally 关闭浏览器。
 (async () => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   const page = await browser.newPage({ viewport: { width: 1512, height: 1080 } });
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   const button = (name, scope = page) => scope.getByRole('button', { name, exact: true });
+  // 上传整份工作簿，核对逐表识别界面与导入响应，返回新草稿供来源和数量断言。
   async function importFile(file, expectedSheets, screenshot) {
     await page.goto(base + '/quotation/workbench/index');
     await button('导入客户清单').click();
@@ -22,6 +26,7 @@ async function api(p, method = 'GET', body) {
     assert.equal(await dialog.locator('.el-form-item__label').getByText('报价类型', { exact: true }).count(), 0);
     assert.equal(await button('导入整份清单并创建报价', dialog).isEnabled(), true);
     await page.screenshot({ path: path.join(out, screenshot), fullPage: false, animations: 'disabled' });
+    // 监听新建报价请求获取真实编号，确认弹窗关闭后只出现一个整单运费入口。
     const created = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/quotes') && r.request().method() === 'POST');
     await button('导入整份清单并创建报价', dialog).click();
     const response = await created; assert.equal(response.status(), 200);
@@ -33,8 +38,10 @@ async function api(p, method = 'GET', body) {
   }
   try {
     let fixture;
+    // 同一多工作表样本分别用 xls/xlsx 验证，包含两张产品表及一张空表。
     for (const ext of ['xls', 'xlsx']) {
       fixture = await importFile(path.join(out, '整单-多工作表.' + ext), 3, '整单导入-' + ext + '.png');
+      // 产品顺序按工作表及原行号合并；未知真实产品不删除，空表在来源摘要中单独标记。
       assert.deepEqual(fixture.body.rows.map(r => r.name), ['防火阀', '未知产品', '镀锌风管']);
       assert.deepEqual(fixture.body.rows.map(r => r.source_sheet), ['设备', '设备', '风管、风阀、风口']);
       assert.deepEqual(fixture.body.rows.map(r => r.source_row), [5, 6, 2]);
@@ -46,7 +53,7 @@ async function api(p, method = 'GET', body) {
       await page.getByText('设备：已导入 2 个产品行', { exact: true }).waitFor();
       await page.getByText('风管、风阀、风口：已导入 1 个产品行', { exact: true }).waitFor();
     }
-    // The common order conditions and original pricing engines still produce the same row prices.
+    // 统一整单条件后，防火阀和风管仍分别得到原计价引擎的金额，未知行继续阻止整单定价。
     const field = label => page.locator('.el-form-item').filter({ has: page.locator('.el-form-item__label').getByText(label, { exact: true }) });
     const choose = async (label, text) => { await field(label).locator('.el-select').click(); await page.getByRole('option', { name: text, exact: true }).click(); };
     for (const [label, value] of [['报价含税口径 · 必选', '不含税'], ['整单付款方式 · 必选', /^现金 × 1(?:\.0+)?$/], ['面积结算口径 · 必选', '净面积'], ['成品状态 · 必选', '半成品'], ['管件类型', '直管'], ['法兰形式 · 必选', '角钢法兰']]) await choose(label, value);
@@ -56,11 +63,13 @@ async function api(p, method = 'GET', body) {
     assert.equal(Number(fixture.result.rows[0].amount), 252);
     assert.equal(Number(fixture.result.rows[2].amount), 510);
     assert.equal(fixture.result.rows[1].status, 'pending'); assert.equal(fixture.result.total, null);
+    // 在本行抽屉核对原工作表与原行号，确保产品仍能追溯到客户资料。
     await button('参数 / 明细').first().click();
     await page.getByText('原始客户清单内容', { exact: true }).click();
     await page.getByText('设备 · 原表第 5 行', { exact: true }).waitFor();
     await button('完成核对').click();
     const result = { passed: true, formats: ['xls', 'xlsx'], productRows: 3, originalPrices: [252, 510], unknownPreserved: true, sample: null };
+    // 可选客户样本含 49 个设备行和 182 个材料行；检查 231 个唯一行 ID 和跨表顺序。
     if (process.env.WORKBOOK_SAMPLE) {
       const sample = await importFile(process.env.WORKBOOK_SAMPLE, 2, '整单导入-暖通询价单.png');
       assert.deepEqual(sample.body.source_sheets.map(s => [s.name, s.row_count]), [['设备', 49], ['风管、风阀、风口', 182]]);
@@ -76,6 +85,7 @@ async function api(p, method = 'GET', body) {
       result.sample = { worksheets: sample.body.source_sheets, rows: sample.body.rows.length };
     }
     assert.deepEqual(errors, []);
+    // 仅输出样本摘要、金额及未知项保留状态，不重新生成或覆盖 golden 基准。
     fs.writeFileSync(path.join(out, 'workbook-import-ui-result.json'), JSON.stringify(result, null, 2));
     console.log('PASS: XLS/XLSX whole-workbook import, independent headers, preserved source order, single freight choice, unchanged prices, unknown rows pending' + (result.sample ? '; customer workbook = 49 + 182 = 231 rows' : ''));
   } catch (e) {

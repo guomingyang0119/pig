@@ -10,8 +10,13 @@ import java.util.zip.GZIPInputStream;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * 安装费用回归验证：覆盖逐行税费取整、地区项目匹配、计数等量例外及现场附加费。
+ *
+ */
 class InstallationPricingEngineTests {
 
+	// 把源安装指标构造为已经生效的发布版本，测试无需连接真实价格库。
 	private Map<String, Object> installationResource() throws IOException {
 		Map<String, Object> catalog = new ObjectMapper().readValue(DuctExportService.asset("installation-catalog-seed.json"),
 				Map.class);
@@ -20,6 +25,7 @@ class InstallationPricingEngineTests {
 				"status", "published", "body", catalog);
 	}
 
+	// 两条小数安装费和 0.03 元现场费专门区分逐行取整与整单取整，并对比含税/未税口径。
 	private Map<String, Object> lineSettlementQuote(boolean taxIncluded) {
 		return obj("pricing_mode", "duct_v1", "duct_options", obj("tax_included", taxIncluded),
 				"installation_options", obj("included", true, "region", "贵州", "include_auxiliaries", false,
@@ -32,6 +38,10 @@ class InstallationPricingEngineTests {
 								"installation", obj("unit_price", "1.99"))));
 	}
 
+	/**
+	 * 含税安装逐行乘 1.01 向上取整，现场附加费另取整一次，不能先合并整单再取整。
+	 *
+	 */
 	@Test
 	void taxesAndRoundsEachInstallationLineAndKeepsSiteChargeSeparate() throws IOException {
 		var result = InstallationPricingEngine.calculate(lineSettlementQuote(true), List.of(installationResource()),
@@ -47,6 +57,10 @@ class InstallationPricingEngineTests {
 		assertEquals("高空施工附加费", fee.get("site_note"));
 	}
 
+	/**
+	 * 不含税安装行仍向上取整，但现场附加费保留录入小数且税额为零。
+	 *
+	 */
 	@Test
 	void untaxedOrderRoundsLinesButUsesEnteredSiteChargeDirectly() throws IOException {
 		var result = InstallationPricingEngine.calculate(lineSettlementQuote(false), List.of(installationResource()),
@@ -61,6 +75,10 @@ class InstallationPricingEngineTests {
 		assertEquals("0.00", fee.get("tax_amount"));
 	}
 
+	/**
+	 * 一条安装待确认不抹掉另一条已算金额；安装汇总保持待确认，方便逐行核对。
+	 *
+	 */
 	@Test
 	void confirmedLineKeepsItsOwnAmountWhenAnotherInstallationLineIsPending() throws IOException {
 		var quote = lineSettlementQuote(true);
@@ -74,6 +92,10 @@ class InstallationPricingEngineTests {
 		assertEquals("pending", lines.get(1).get("status"));
 	}
 
+	/**
+	 * 现场附加费大于零时必须提供对客备注原因，缺原因不能形成正式安装合计。
+	 *
+	 */
 	@Test
 	void positiveSiteChargeRequiresAReasonForTheQuotationRemark() throws IOException {
 		var quote = lineSettlementQuote(true);
@@ -84,6 +106,10 @@ class InstallationPricingEngineTests {
 		assertTrue(result.issues().contains("安装费：现场附加费大于0时请填写附加原因"));
 	}
 
+	/**
+	 * 核验四地区当前项目价及防雨百叶宽高和 1500mm 边界，尺寸不明不猜价，陕西按其独立项目。
+	 *
+	 */
 	@Test
 	void latestCatalogUsesReviewedFourRegionPricesAndRainLouverBands() throws IOException {
 		var catalog = map(installationResource().get("body"));
@@ -105,6 +131,10 @@ class InstallationPricingEngineTests {
 		assertEquals("sx_33", InstallationPricingEngine.autoProject(equipment("防雨百叶风口", "尺寸待定"), quote, "陕西"));
 	}
 
+	/**
+	 * 覆盖地区与名称匹配分支：已明确规则正确命中项目，陕西电动阀等未明确配置继续待选择。
+	 *
+	 */
 	@Test
 	void latestCatalogResolvesOnlyUnambiguousPreviouslyPendingProducts() {
 		var quote = obj("duct_options", obj());
@@ -148,6 +178,10 @@ class InstallationPricingEngineTests {
 				InstallationPricingEngine.autoProject(equipment("电动泄压阀", "500*1000"), quote, "陕西"));
 	}
 
+	/**
+	 * 核验已确认的单层风口套→个计数例外，数量等量保留并按每个安装价结算。
+	 *
+	 */
 	@Test
 	void louverSetUsesTheReviewedPerItemInstallationPrice() throws IOException {
 		var row = equipment("单层防火百叶风口", "800*400");
@@ -167,6 +201,10 @@ class InstallationPricingEngineTests {
 		assertEquals("40", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 多叶送风口和防火风口的套装沿用已核对按个安装口径，各自匹配项目并保持原数量。
+	 *
+	 */
 	@Test
 	void multiLeafSupplyAndFireOutletSetsCountAsInstallationItems() throws IOException {
 		var multiLeaf = equipment("电动多叶加压送风口", "600*（800+250）");
@@ -195,6 +233,10 @@ class InstallationPricingEngineTests {
 		assertEquals("120", lines.get(1).get("quoted_amount"));
 	}
 
+	/**
+	 * 电动泄压阀按对应地区普通阀安装项目计价，四地区按个、陕西按套并使用确认的等量数量。
+	 *
+	 */
 	@Test
 	void electricPressureReliefValveUsesOrdinaryValveInstallationPrice() throws IOException {
 		var row = equipment("电动泄压阀", "500*1000");
@@ -228,6 +270,10 @@ class InstallationPricingEngineTests {
 		assertEquals("165", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 不锈钢风管仅写角钢形式仍按基础全焊价，明确安装包含法兰才采用较高安装价。
+	 *
+	 */
 	@Test
 	void stainlessDuctDefaultsToFullWeldAndUsesHigherRateOnlyWhenInstallationIncludesFlange() throws IOException {
 		var row = obj("name", "304不锈钢板风管", "spec", "304不锈钢板0.5mm", "remark", "", "category", "风管",
@@ -256,6 +302,10 @@ class InstallationPricingEngineTests {
 		assertEquals("330", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 名称“板式排烟风口”包含风字时仍命中板式安装项目，不因叫法差异漏价。
+	 *
+	 */
 	@Test
 	void plateSmokeOutletNameWithWindCharacterUsesReviewedInstallationPrice() throws IOException {
 		var row = equipment("280℃板式排烟风口（常闭）", "1250*630");
@@ -274,6 +324,10 @@ class InstallationPricingEngineTests {
 		assertEquals("130", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 四地区静压箱的台→个计数等量例外保留原 3 台数量，不要求无意义的重复工程量。
+	 *
+	 */
 	@Test
 	void fourRegionStaticBoxUsesSourceQuantityWhenCatalogCountsByItem() throws IOException {
 		var row = obj("name", "静压箱", "spec", "1600×800×800", "remark", "", "category", "设备", "unit", "台",
@@ -295,6 +349,10 @@ class InstallationPricingEngineTests {
 		assertEquals("900", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 自垂百叶带阀仍按自垂百叶项目安装，附带控制阀不另重复计算安装。
+	 *
+	 */
 	@Test
 	void gravityLouverWithValveUsesGravityLouverInstallationPrice() throws IOException {
 		var row = equipment("自垂百叶（带阀）", "800×500");
@@ -314,6 +372,10 @@ class InstallationPricingEngineTests {
 		assertEquals("150", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 没有个数且按㎡计量的消声弯头沿用共板面积安装价，使用原工程量总面积。
+	 *
+	 */
 	@Test
 	void elbowWithoutItemCountUsesCommonFlangeAreaPrice() throws IOException {
 		var row = obj("name", "消声弯头", "spec", "", "remark", "", "category", "消声设备", "unit", "㎡",
@@ -333,6 +395,10 @@ class InstallationPricingEngineTests {
 		assertEquals("300", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 按面积安装的弯头遇到整单两种法兰时采用已确认的角钢口径。
+	 *
+	 */
 	@Test
 	void elbowWithoutItemCountUsesAnglePriceWhenOrderHasBothFlanges() throws IOException {
 		var elbow = obj("name", "消声弯头", "spec", "", "remark", "", "category", "消声设备", "unit", "㎡",
@@ -352,6 +418,10 @@ class InstallationPricingEngineTests {
 		assertEquals("350", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 已知个数的弯头始终按每个安装价，不能因整单混合法兰改为面积计价。
+	 *
+	 */
 	@Test
 	void elbowWithItemCountKeepsPerItemPriceWhenOrderHasBothFlanges() throws IOException {
 		var elbow = equipment("消声弯头", "");
@@ -374,6 +444,10 @@ class InstallationPricingEngineTests {
 		assertEquals("130", line.get("quoted_amount"));
 	}
 
+	/**
+	 * 明确远控名称才把机构附加价与基础安装价合并，普通电动防火阀不自动追加远控费用。
+	 *
+	 */
 	@Test
 	void explicitRemoteControlAddsTheReviewedSurchargeOnlyInFourRegions() throws IOException {
 		var quote = obj("pricing_mode", "equipment_v1", "duct_options", obj(), "equipment_options",
@@ -398,6 +472,10 @@ class InstallationPricingEngineTests {
 		assertEquals("0", line.get("remote_control_unit_price"));
 	}
 
+	/**
+	 * 交叉施工需明确计取或免收：免收需原因，计取需金额和原因，最终只增加一次现场费用。
+	 *
+	 */
 	@Test
 	void crossWorkRequiresAnExplicitSiteChargeDecision() throws IOException {
 		var quote = lineSettlementQuote(false);
@@ -409,6 +487,7 @@ class InstallationPricingEngineTests {
 		assertTrue(result.issues().contains("安装费：交叉施工请确认是否计取现场附加费"));
 		assertEquals("0", result.fee().get("site_amount"));
 
+		// 先验证免收仍需解释合同或现场依据，再补齐原因使该分支可结算。
 		options.put("cross_work_fee_decision", "waive");
 		result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj(), obj()),
 				LocalDate.now());
@@ -420,6 +499,7 @@ class InstallationPricingEngineTests {
 		assertTrue(result.issues().isEmpty(), result.issues().toString());
 		assertEquals("0", result.fee().get("site_amount"));
 
+		// 切换为计取后必须重新提供正金额与原因，旧免收说明不代替收费信息。
 		options.putAll(obj("cross_work_fee_decision", "charge", "include_site_fee", true, "site_amount", "",
 				"site_note", "", "site_waive_reason", ""));
 		result = InstallationPricingEngine.calculate(quote, List.of(installationResource()), List.of(obj(), obj()),
@@ -433,15 +513,21 @@ class InstallationPricingEngineTests {
 		assertEquals("300", result.fee().get("site_amount"));
 	}
 
+	// 按源项目编号取记录，直接核对地区表的已确认单价。
 	private static Map<String, Object> project(List<Map<String, Object>> projects, String id) {
 		return projects.stream().filter(p -> s(p, "id").equals(id)).findFirst().orElseThrow();
 	}
 
+	// 构造默认按个计数的设备行，各用例再明确需要验证的特殊供货单位。
 	private static Map<String, Object> equipment(String name, String spec) {
 		return obj("name", name, "spec", spec, "remark", "", "category", "设备", "unit", "个", "quantity", "1",
 				"attributes", obj());
 	}
 
+	/**
+	 * 冻结基准同时覆盖单独安装费和三种整单引擎接入，核对行费、税费及最终付款汇总行为。
+	 *
+	 */
 	@TestFactory
 	Stream<DynamicTest> matchesFrozenPythonInstallation() throws IOException {
 		Map<String, Object> fixture;

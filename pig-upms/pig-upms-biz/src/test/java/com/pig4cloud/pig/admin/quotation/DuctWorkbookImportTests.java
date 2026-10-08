@@ -5,10 +5,15 @@ import java.util.*;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * 验证整份客户工作簿的合并导入、来源记录和整单辅材汇总。
+ * 重点防止跨表重复汇总、错误起始行以及整份产品数量超限造成遗漏或重复计费。
+ */
 class DuctWorkbookImportTests {
 
 	final DuctImportService importer = new DuctImportService();
 
+	/** 按真实导入器的行结构创建模拟工作表，保留一基源行号和原单元格用于多表验证。 */
 	Map<String, Object> sheet(String name, List<List<String>> values) {
 		List<Map<String, Object>> rows = new ArrayList<>();
 		for (int i = 0; i < values.size(); i++)
@@ -16,6 +21,7 @@ class DuctWorkbookImportTests {
 		return obj("name", name, "rows", rows);
 	}
 
+	/** 验证两表均出现角码汇总时阻断导入，并同时指出工作表名称，要求人工合并避免重复收费。 */
 	@Test
 	void sameAccessorySummaryInTwoWorksheetsMustNotBeOverwrittenOrDoubleCharged() {
 		var values = List.of(List.of("产品名称", "工程量", "单位"), List.of("角码", "20", "个"));
@@ -26,6 +32,7 @@ class DuctWorkbookImportTests {
 		assertTrue(error.contains("清单一") && error.contains("清单二") && error.contains("相同配件汇总"));
 	}
 
+	/** 验证只有数量列的角码、卡条和角钢汇总可提取为整单辅材数量/米数。 */
 	@Test
 	void accessorySummaryAcceptsQuantityColumnWithoutEngineeringQuantity() {
 		var values = List.of(List.of("产品名称", "数量", "单位"), List.of("角码", "8000", "个"),
@@ -37,6 +44,7 @@ class DuctWorkbookImportTests {
 		assertEquals("120", options.get("flange_30_meters"));
 	}
 
+	/** 验证辅材有明确数量时优先数量，只有数量空缺时才读取工程量列。 */
 	@Test
 	void accessorySummaryPrefersQuantityAndFallsBackToEngineeringQuantity() {
 		var values = List.of(List.of("产品名称", "数量", "工程量", "单位"), List.of("角码", "20", "99", "个"),
@@ -47,6 +55,7 @@ class DuctWorkbookImportTests {
 		assertEquals("88", options.get("clip_meters"));
 	}
 
+	/** 验证多表法兰提示合并为 mixed，合计说明保留所属表；错误起始行及无原因排除不能静默漏表。 */
 	@Test
 	void perSheetFlangeHintsAndNotesKeepTheirSourceWhileSharingOrderOptions() {
 		var first = sheet("角钢", List.of(List.of("产品名称", "工程量", "单位", "法兰方式"), List.of("风管", "10", "㎡", "角钢法兰")));
@@ -63,6 +72,7 @@ class DuctWorkbookImportTests {
 				() -> importer.buildWorkbook(List.of(first, second), List.of(obj("name", "角钢", "excluded", "true"))));
 	}
 
+	/** 验证产品行上限对整份文件累计检查，两张各 5001 条产品的表不能绕过 10000 行限制。 */
 	@Test
 	void rowLimitAppliesToTheEntireWorkbook() {
 		List<List<String>> values = new ArrayList<>();

@@ -1,11 +1,14 @@
-// Mutations are restricted to the isolated Java/H2 verification server.
+// 自动逐行识别及统一运费入口的迁移阶段验收，仅在本机隔离 Java/H2 服务创建和修改测试报价。
+// 本脚本保留当时每台/每个人工运费的断言；当前整单设备运费门槛由现行引擎及单元测试定义。
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const base = 'http://127.0.0.1:18763', out = path.join(__dirname, 'test-output');
+// 直接调用隔离报价接口并核对 HTTP 状态，读取 data 包装；写请求沿用测试资源 revision。
 async function api(p, method = 'GET', body) {
   const r = await fetch(base + '/admin/quotation' + p, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const j = await r.json(); assert.equal(r.status, 200, JSON.stringify(j)); return j.data;
 }
+// 浏览器流程依序执行，页面错误集中收集；无论断言成功或失败都在 finally 关闭浏览器。
 (async () => {
   const browser = await chromium.launch({ headless: true, channel: 'msedge' });
   const page = await browser.newPage({ viewport: { width: 1512, height: 1080 }, acceptDownloads: true });
@@ -13,12 +16,14 @@ async function api(p, method = 'GET', body) {
   const button = (name, scope = page) => scope.getByRole('button', { name, exact: true });
   const field = (label) => page.locator('.el-form-item').filter({ has: page.locator('.el-form-item__label').getByText(label, { exact: true }) });
   const choose = async (label, text) => { await field(label).locator('.el-select').click(); await page.getByRole('option', { name: text, exact: true }).click(); };
+  // 保存并等待服务端试算，避免界面尚未更新就读取旧报价结果。
   async function calc(id) {
     const response = page.waitForResponse(r => r.url().endsWith('/calculate'));
     await button('保存并试算').click(); await response;
     await page.waitForFunction(() => !document.querySelector('.el-loading-mask'));
     return api('/quotes/' + id);
   }
+  // 统一设置净面积、半成品、直管、角钢和现金未税条件，便于比较导入前后金额。
   async function conditions() {
     await choose('报价含税口径 · 必选', '不含税');
     await choose('整单付款方式 · 必选', /^现金 × 1(?:\.0+)?$/);
@@ -28,6 +33,7 @@ async function api(p, method = 'GET', body) {
     await choose('法兰形式 · 必选', '角钢法兰');
   }
   try {
+    // 纯风管阶段仅发布风管指标，验证不要求无关设备指标。
     if (!(await api('/resources')).some(c => c.kind === 'duct_catalog')) {
       const dc = await api('/resources/seed', 'POST', {}), dr = (await api('/resources')).find(c => c.id === dc.id);
       await api('/resources/' + dc.id + '/publish', 'POST', { revision: dr.revision });
@@ -41,7 +47,8 @@ async function api(p, method = 'GET', body) {
     await api('/quotes/' + id, 'PUT', { ...q.body, revision: q.revision });
     await page.reload(); await conditions(); q = await calc(id);
     assert.equal(Number(q.result.total), 510, JSON.stringify(q.result));
-    assert.equal(q.result.pending_count, 0); // no equipment catalog exists yet
+    assert.equal(q.result.pending_count, 0); // 此时尚未发布设备指标，纯风管也应可报价。
+    // 运费设置只能有一个整单入口；切换后同时同步风管与设备选项。
     assert.equal(await field('整单是否含运费').count(), 1);
     assert.equal(await field('设备运费').count(), 0);
     assert.equal(await page.getByRole('checkbox', { name: '风管包含运费', exact: true }).count(), 0);
@@ -51,6 +58,7 @@ async function api(p, method = 'GET', body) {
     assert.equal(q.body.equipment_options.include_freight, true);
     await choose('整单是否含运费', '不含运费'); q = await calc(id);
     assert.equal(Number(q.result.total), 510);
+    // 之后再建立临时设备指标，导入混合客户清单并保留未知产品。
     const equipment = await api('/equipment/catalog-seed');
     equipment.purchased = [{ id: 'test', name: '换气扇', model: 'TEST', unit: '台', cost: '75' }];
     if (!(await api('/resources')).some(c => c.kind === 'equipment_catalog')) {
@@ -68,10 +76,12 @@ async function api(p, method = 'GET', body) {
     await button('导入整份清单并创建报价', dialog).click();
     await page.getByText('风管 1 项 / 设备 3 项 / 待识别 1 项', { exact: false }).waitFor();
     id = new URL(page.url()).searchParams.get('id'); q = await api('/quotes/' + id);
+    // 记录原行 ID，后续排除与试算都应保持来源行和顺序不变。
     const originalIds = q.body.rows.map(r => r.row_id);
     assert.deepEqual(q.body.rows.map(r => r.category), ['风管', '风阀', '风机', '外购设备', '']);
     assert.deepEqual(q.body.rows.slice(1).map(r => r.quantity), ['2', '1', '3', '4']);
     await conditions(); q = await calc(id);
+    // 已知材料独立计算，未知产品保持空金额和待确认，不允许以零价通过正式导出。
     assert.equal(q.result.rows[0].status, 'priced'); assert.equal(Number(q.result.rows[0].amount), 510);
     assert.equal(q.result.rows[1].status, 'priced'); assert.equal(Number(q.result.rows[1].amount), 252);
     assert.equal(q.result.rows[3].status, 'priced'); assert.equal(Number(q.result.rows[3].amount), 300);
@@ -79,7 +89,7 @@ async function api(p, method = 'GET', body) {
     assert.equal(q.result.formal_ready, false); assert.equal(await button('生成正式报价').isDisabled(), true);
     assert.equal(q.result.total, null);
     await page.screenshot({ path: path.join(out, '自动识别-逐行报价待确认.png'), fullPage: true });
-    // Explicitly exclude out-of-scope rows; original source rows remain intact.
+    // 明确排除范围外行并填写原因，原行 ID 与来源信息继续保留。
     q.body.rows[2].excluded = q.body.rows[4].excluded = true;
     q.body.rows[2].exclude_reason = q.body.rows[4].exclude_reason = '验收明确排除范围外项目';
     await api('/quotes/' + id, 'PUT', { ...q.body, revision: q.revision });
@@ -94,9 +104,10 @@ async function api(p, method = 'GET', body) {
     assert.equal(q.body.duct_options.include_freight, true);
     assert.equal(q.body.equipment_options.include_freight, true);
     assert.equal(Number(q.result.rows[0].amount), 524.4);
-    assert.equal(q.result.rows[1].status, 'pending'); // Original manual freight rule still applies.
+    assert.equal(q.result.rows[1].status, 'pending'); // 此断言沿用该阶段的原按行人工运费要求。
     assert.equal(q.result.rows[3].status, 'pending');
     assert.equal(q.result.total, null);
+    // 以下每台运费输入和金额期望是原按行运费阶段的历史断言，不代表现行整单门槛规则。
     for (const index of [1, 3]) {
       await button('参数 / 明细').nth(index).click();
       await field('每台 / 每个运费（元，可填 0）').getByRole('textbox').fill(index === 1 ? '7' : '0');
@@ -114,7 +125,8 @@ async function api(p, method = 'GET', body) {
     assert.equal(q.body.duct_options.include_freight, false);
     assert.equal(q.body.equipment_options.include_freight, false);
     assert.equal(Number(q.result.total), 1062);
-    assert.equal(q.body.rows[1].attributes.freight_per_unit, '7'); // Keep entered values for later, but do not charge them.
+    assert.equal(q.body.rows[1].attributes.freight_per_unit, '7'); // 关闭运费后保留已填值供以后查看，本次不计费。
+    // 模拟旧草稿风管、设备运费口径不一致，必须由报价员重新明确整单开关。
     q.body.include_freight = null;
     q.body.duct_options.include_freight = true;
     q.body.equipment_options.include_freight = false;
@@ -124,7 +136,8 @@ async function api(p, method = 'GET', body) {
     await choose('整单是否含运费', '不含运费'); q = await calc(id);
     assert.equal(Number(q.result.total), 1062);
     fs.writeFileSync(path.join(out, 'auto-import-ui-result.json'), JSON.stringify(q, null, 2));
-    // A legacy whole-duct draft can be converted in place, without another upload.
+    // 旧的整单风管草稿可原位转换为逐行识别，保留已有清单。
+    // 旧风管草稿中的防火阀可在原报价内重新识别，工程量转设备数量而无需再次上传。
     const legacy = await api('/quotes', 'POST', { pricing_mode: 'duct_v1', project: '旧草稿重新识别' });
     q = await api('/quotes/' + legacy.id);
     q.body.rows = [{ name: '防火阀', spec: '500×500', category: '风管', engineering_quantity: '2', unit: '个', attributes: {} }];

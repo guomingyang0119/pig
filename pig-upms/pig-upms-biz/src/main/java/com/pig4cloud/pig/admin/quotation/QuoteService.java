@@ -6,6 +6,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.*;
 import java.util.*;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
@@ -19,6 +21,7 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 @Service
 public class QuoteService {
 
+	/** 当前报价操作者：账号ID用于归属，姓名用于审计，manager表示报价负责人权限。 */
 	public record Actor(long id, String name, boolean manager) {
 	}
 
@@ -28,6 +31,9 @@ public class QuoteService {
 
 	private final EquipmentPricingEngine equipment = new EquipmentPricingEngine();
 
+	/**
+	 * 判断是否需要设备报价选项；自动识别模式在保存时使用复合报价的内部模式。
+	 */
 	private static boolean equipmentMode(Map<String, Object> body) {
 		return Set.of("equipment_v1", "mixed_v1").contains(s(body, "pricing_mode"));
 	}
@@ -48,6 +54,9 @@ public class QuoteService {
 		};
 	}
 
+	/**
+	 * 把唯一整单运费选择同步给各引擎的旧选项；null保留待确认状态。
+	 */
 	private static void applyFreight(Map<String, Object> body, Object value) {
 		if (value != null && !bool(value))
 			throw new RuleException("整单是否含运费必须明确选择");
@@ -59,6 +68,9 @@ public class QuoteService {
 					map(body.get(key)).put("include_freight", value);
 	}
 
+	/**
+	 * 仅草稿需要重新确认运费选择；历史定稿或归档报价保留当时的业务快照。
+	 */
 	private static boolean freightUnconfirmed(Map<String, Object> quote) {
 		return s(quote, "state").equals("draft") && freightIncluded(map(quote.get("body"))) == null;
 	}
@@ -88,6 +100,7 @@ public class QuoteService {
 		Boolean freight = freightIncluded(body);
 		if (freight == null)
 			throw new RuleException("请统一选择整单是否含运费后重新试算");
+		// 先解析生效的产品别名/组合规则，再让原生计价引擎处理实际产品和结算。
 		applyFreight(body, freight);
 		var rows = list(body.get("rows")).stream()
 			.map(row -> ProductRuleCatalog.prepareRow(row, resources, LocalDate.now()))
@@ -108,6 +121,9 @@ public class QuoteService {
 		return result;
 	}
 
+	/**
+	 * 风管草稿中出现非风管产品规则时启用复合计算，并继承税费、付款和运费选择。
+	 */
 	private static void enableProductRuleMode(Map<String, Object> body, List<Map<String, Object>> rows) {
 		if (!s(body, "pricing_mode").equals("duct_v1") || rows.stream().noneMatch(row ->
 				row.containsKey("_product_rule_resource") && !s(row, "category").equals("风管")))
@@ -120,12 +136,19 @@ public class QuoteService {
 		body.putAll(obj("pricing_mode", "mixed_v1", "recognition_mode", "auto_v1", "equipment_options", options));
 	}
 
+	/**
+	 * 提取实际绑定的规则版本和问题，保存到试算结果中作为正式导出复核依据。
+	 */
 	private static List<Map<String, Object>> productRuleBindings(List<Map<String, Object>> rows) {
 		return list(ProductRuleCatalog.bindings(rows)).stream()
 			.filter(binding -> !map(binding.get("resource")).isEmpty() || !blank(binding.get("issue")))
 			.toList();
 	}
 
+	/**
+	 * 用今天的生效规则重新匹配清单，与上次试算绑定比较。
+	 * 别名、组合规则或生效状态变化时，草稿结果需要重新试算。
+	 */
 	private boolean productRulesChanged(Map<String, Object> body, Map<String, Object> result,
 			List<Map<String, Object>> resources) {
 		if (result.isEmpty())
@@ -148,15 +171,24 @@ public class QuoteService {
 		this.repo = repo;
 	}
 
+	/**
+	 * 以409表示记录状态或版本冲突，提示页面刷新或建立修订版。
+	 */
 	private static void conflict(String message) {
 		throw new ResponseStatusException(HttpStatus.CONFLICT, message);
 	}
 
+	/**
+	 * 限制指标发布、策略修改及审计查看等负责人操作。
+	 */
 	private static void leader(Actor actor) {
 		if (!actor.manager())
 			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只有报价负责人可以执行此操作");
 	}
 
+	/**
+	 * 只接收长度受限的文本，防止错误JSON类型进入客户信息、条件或产品参数。
+	 */
 	private static String textValue(Object value, int max) {
 		if (value == null)
 			return "";
@@ -165,11 +197,18 @@ public class QuoteService {
 		return str(value);
 	}
 
+	/**
+	 * 比较客户端修订号与锁定记录，拒绝旧页面和旧文件覆盖新版本。
+	 */
 	private static void revision(Map<String, Object> row, Map<String, Object> data) {
 		if (data.get("revision") == null || n(data.get("revision")).compareTo(n(row.get("revision"))) != 0)
 			conflict("记录已在另一页面修改，请刷新后重试");
 	}
 
+	/**
+	 * 读取并核对报价归属；负责人可查看所有报价，普通报价员仅能访问自己的记录。
+	 * 需编辑时要求草稿状态，需写入时由调用方开启事务并请求行锁。
+	 */
 	private Map<String, Object> quote(String id, Actor actor, boolean lock, boolean editable) {
 		Map<String, Object> q = repo.find("quote_order", id, lock);
 		if (q == null || (!actor.manager() && Long.parseLong(str(q.get("owner_id"))) != actor.id()))
@@ -179,6 +218,9 @@ public class QuoteService {
 		return q;
 	}
 
+	/**
+	 * 锁定当前指标版本记录，供修订号校验和状态变更使用。
+	 */
 	private Map<String, Object> catalog(String id) {
 		Map<String, Object> r = repo.find("quote_catalog", id, true);
 		if (r == null)
@@ -186,10 +228,16 @@ public class QuoteService {
 		return r;
 	}
 
+	/**
+	 * 返回全部报价指标快照，计价时再按类型、状态、日期与版本选择。
+	 */
 	public List<Map<String, Object>> resources() {
 		return repo.catalogs();
 	}
 
+	/**
+	 * 普通报价员可见已发布/停用规则及自己的草稿，负责人可见全部规则。
+	 */
 	public List<Map<String, Object>> productRules(Actor actor) {
 		return repo.catalogs().stream().filter(r -> s(r, "kind").equals("product_rule"))
 			.filter(r -> actor.manager() || !s(r, "status").equals("draft")
@@ -197,19 +245,42 @@ public class QuoteService {
 			.toList();
 	}
 
+	/**
+	 * 根据当前产品行推荐规则和编辑模板，并返回操作者是否可发布。
+	 */
 	public Map<String, Object> productRuleRecommendations(Actor actor, Map<String, Object> data) {
+		var resources = repo.catalogs();
+		var row = repo.object(repo.json(map(data.get("row"))));
+		var definition = map(data.get("body"));
+		if (!definition.isEmpty()) {
+			row.put("product_rule", definition);
+			row.remove("product_rule_family");
+		}
+		var prepared = ProductRuleCatalog.prepareRow(row, resources, LocalDate.now());
+		if (definition.isEmpty()) definition = map(map(prepared.get("_product_rule_resource")).get("body"));
+		var catalogs = EquipmentCatalog.active(resources, LocalDate.now());
 		return obj("templates", ProductRuleCatalog.templates(), "recommendations",
-				ProductRuleCatalog.recommendations(map(data.get("row")), repo.catalogs(), LocalDate.now()),
-				"catalog_rates", ProductRuleCatalog.catalogRates(), "can_publish", actor.manager());
+				ProductRuleCatalog.recommendations(row, resources, LocalDate.now()),
+				"catalog_rates", ProductRuleCatalog.catalogRates(), "can_publish", actor.manager(), "fan_input",
+				FanInputGuidance.describe(row, prepared, resources, LocalDate.now(), null), "parameter_input",
+				ProductInputGuidance.describe(row, definition, catalogs.size() == 1 ? map(catalogs.get(0).get("body")) : obj()));
 	}
 
-	/** Trial never changes a catalog or quotation; monetary results use the native settlement pipeline. */
+	/** 产品规则试算不保存指标或报价，金额沿用实际报价的税费、运费、安装和付款结算流程。 */
 	public Map<String, Object> trialProductRule(Actor actor, Map<String, Object> data) {
 		Map<String, Object> definition = map(data.get("body"));
 		ProductRuleCatalog.validate(definition);
 		var row = repo.object(repo.json(map(data.get("row"))));
 		row.put("product_rule", definition);
 		row.remove("product_rule_family");
+		var resources = repo.catalogs();
+		var prepared = ProductRuleCatalog.prepareRow(row, resources, LocalDate.now());
+		var guidance = FanInputGuidance.describe(row, prepared, resources, LocalDate.now(), null);
+		var catalogs = EquipmentCatalog.active(resources, LocalDate.now());
+		var inputs = ProductInputGuidance.describe(row, definition, catalogs.size() == 1 ? map(catalogs.get(0).get("body")) : obj());
+		if (guidance != null && Set.of("unknown", "conflict").contains(s(guidance, "speed_mode")))
+			return obj("result", obj("index", 1, "status", "pending", "name", row.get("name"), "reason",
+					guidance.get("reason"), "fan_input", guidance, "parameter_input", inputs, "trace", List.of()));
 		var options = equipmentDefaults();
 		var duct = ductDefaults();
 		duct.putAll(map(data.get("duct_options")));
@@ -223,10 +294,16 @@ public class QuoteService {
 		var body = obj("pricing_mode", "mixed_v1", "rows", List.of(row), "equipment_options", options,
 				"duct_options", duct, "include_freight", data.getOrDefault("include_freight", false),
 				"installation_options", obj("included", installationIncluded), "installation_items", List.of());
-		var result = compute(body, repo.catalogs(), map(settings(actor).get("policy")));
-		return obj("result", list(result.get("rows")).get(0));
+		var result = list(compute(body, resources, map(settings(actor).get("policy"))).get("rows")).get(0);
+		if (guidance != null)
+			result.put("fan_input", FanInputGuidance.describe(row, prepared, resources, LocalDate.now(), result));
+		result.put("parameter_input", inputs);
+		return obj("result", result);
 	}
 
+	/**
+	 * 校验产品规则并串行化创建草稿；此入口允许报价员建立待负责人发布的规则。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> createProductRule(Actor actor, Map<String, Object> body) {
 		ProductRuleCatalog.validate(body);
@@ -234,6 +311,9 @@ public class QuoteService {
 		return insertCatalog(actor, "product_rule", body);
 	}
 
+	/**
+	 * 先确认目标为产品规则，再沿用指标草稿的归属、状态与版本校验。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> editProductRule(Actor actor, String id, Map<String, Object> data) {
 		repo.catalogLock();
@@ -242,6 +322,9 @@ public class QuoteService {
 		return editCatalog(actor, id, data);
 	}
 
+	/**
+	 * 将产品规则动作交给统一指标生命周期，同时保留规则专属权限约束。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> productRuleAction(Actor actor, String id, String action, Map<String, Object> data) {
 		repo.catalogLock();
@@ -250,6 +333,10 @@ public class QuoteService {
 		return catalogAction(actor, id, action, data);
 	}
 
+	/**
+	 * 通用供货/安装指标由负责人维护；报价员仅可维护自己创建的产品规则草稿。
+	 * 产品规则的发布、停用与恢复生效仍必须由负责人执行。
+	 */
 	private static void catalogAuthority(Actor actor, Map<String, Object> resource, String action) {
 		if (!s(resource, "kind").equals("product_rule")) {
 			leader(actor);
@@ -260,6 +347,9 @@ public class QuoteService {
 			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只能维护自己的规则草稿；通用规则由报价负责人发布");
 	}
 
+	/**
+	 * 读取正式模板确认及取整策略，同时返回模板哈希供页面和导出流程核对。
+	 */
 	public Map<String, Object> settings(Actor actor) {
 		Map<String, Object> stored = repo.find("quote_setting", "policy", false);
 		if (stored == null)
@@ -269,6 +359,9 @@ public class QuoteService {
 				DuctExportService.templateHash(), "engine_version", DuctPricingEngine.VERSION);
 	}
 
+	/**
+	 * 锁定策略记录并核对修订号，由负责人更改正式模板确认状态和记录审计。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> changeSettings(Actor actor, Map<String, Object> data) {
 		leader(actor);
@@ -283,11 +376,17 @@ public class QuoteService {
 		return settings(actor);
 	}
 
+	/**
+	 * 生成当前模板版本、哈希及1位小数策略，避免客户端自行指定模板身份。
+	 */
 	private Map<String, Object> envPolicy(Object confirmed) {
 		return obj("formal_template_confirmed", confirmed, "template_version", DuctExportService.TEMPLATE_VERSION,
 				"template_sha256", DuctExportService.templateHash(), "unit_round", 1, "line_round", 1);
 	}
 
+	/**
+	 * 报价负责人首次初始化风管指标草稿；已有任意风管指标时复用已有记录。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> seed(Actor actor) {
 		leader(actor);
@@ -302,11 +401,17 @@ public class QuoteService {
 				java.nio.charset.StandardCharsets.UTF_8)));
 	}
 
+	/**
+	 * 兼容风管指标创建入口，默认资源类型为duct_catalog。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> createCatalog(Actor actor, Map<String, Object> body) {
 		return createCatalog(actor, "duct_catalog", body);
 	}
 
+	/**
+	 * 读取设备指标种子并把生效日期设为今天，供负责人核对后另行保存发布。
+	 */
 	public Map<String, Object> equipmentSeed(Actor actor) {
 		leader(actor);
 		Map<String, Object> body = repo.object(new String(DuctExportService.asset("equipment-catalog-seed.json"),
@@ -315,6 +420,9 @@ public class QuoteService {
 		return body;
 	}
 
+	/**
+	 * 读取安装指标种子并设置初始生效日期，读取操作不写入数据库。
+	 */
 	public Map<String, Object> installationSeed(Actor actor) {
 		leader(actor);
 		Map<String, Object> body = repo.object(new String(DuctExportService.asset("installation-catalog-seed.json"),
@@ -323,6 +431,9 @@ public class QuoteService {
 		return body;
 	}
 
+	/**
+	 * 由负责人创建指定类型的指标草稿，类型必须属于报价模块支持范围。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> createCatalog(Actor actor, String kind, Map<String, Object> body) {
 		leader(actor);
@@ -334,6 +445,9 @@ public class QuoteService {
 		return insertCatalog(actor, kind, body);
 	}
 
+	/**
+	 * 建立新指标系列的第1版草稿，初始ID同时作为系列family，后续版本共用family。
+	 */
 	private Map<String, Object> insertCatalog(Actor actor, String kind, Map<String, Object> body) {
 		if (kind.equals("product_rule") && blank(body.get("effective_from")))
 			body.put("effective_from", LocalDate.now().toString());
@@ -346,15 +460,21 @@ public class QuoteService {
 		return obj("id", id);
 	}
 
+	/**
+	 * 校验草稿的名称和内容大小，统一公司范围；完整价格校验留给发布流程。
+	 */
 	private void checkCatalogDraft(Map<String, Object> body) {
 		body.put("company_id", "guizhou");
 		if (repo.json(body).length() > 2 * 1024 * 1024)
 			throw new RuleException("指标内容过长");
-		// Drafts may be incomplete; publication performs the complete validation.
+		// 指标草稿允许价格等内容暂未补齐；发布或校验动作再检查完整规则。
 		if (blank(body.get("name")))
 			throw new RuleException("请填写指标名称");
 	}
 
+	/**
+	 * 仅更新有权限的指标草稿，保存后递增revision并保留修改前正文审计。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> editCatalog(Actor actor, String id, Map<String, Object> data) {
 		repo.catalogLock();
@@ -375,6 +495,10 @@ public class QuoteService {
 		return obj("revision", n(r.get("revision")).intValue() + 1);
 	}
 
+	/**
+	 * 管理指标的校验、发布、停用、恢复生效、修订和草稿删除。
+	 * 同系列新版本复用已有草稿；发布时检查完整规则和跨系列日期冲突。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> catalogAction(Actor actor, String id, String action, Map<String, Object> data) {
 		repo.catalogLock();
@@ -452,8 +576,7 @@ public class QuoteService {
 						|| (!blank(body.get("effective_to")) && s(body, "effective_to").compareTo(day) < 0))
 					conflict("此版本不在生效日期内，请创建新版本调整日期");
 			}
-			// Check overlap across families, including future versions, before
-			// publishing.
+			// 发布前检查不同系列的生效区间，包括未来日期，避免同类指标或冲突产品规则同时有效。
 			for (Map<String, Object> other : all) {
 				if (!s(other, "kind").equals(s(r, "kind")) || s(other, "family").equals(s(r, "family"))
 						|| !s(other, "status").equals("published"))
@@ -477,6 +600,9 @@ public class QuoteService {
 		return obj("ok", true);
 	}
 
+	/**
+	 * 解析客户Excel并保存带操作者归属的工作表快照；文件名仅保留末级名称。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> upload(Actor actor, byte[] bytes, String filename) {
 		if (filename == null || filename.length() > 255)
@@ -492,7 +618,7 @@ public class QuoteService {
 		return obj("id", id, "filename", clean, "sheets", sheets);
 	}
 
-	/** Store the generated standard workbook and create an unpriced draft in one transaction. */
+	/** 在同一事务中保存AI标准清单、来源资料及未计价草稿，任一步失败则整体回滚。 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> createAiDraft(Actor actor, List<Map<String, Object>> normalizedRows,
 			List<Map<String, Object>> sources) {
@@ -507,8 +633,9 @@ public class QuoteService {
 			throw new RuleException("标准清单行数不一致，请重新生成");
 		for (int i = 0; i < normalizedRows.size(); i++) {
 			Map<String, Object> raw = normalizedRows.get(i), source = detailRows.get(i);
-			source.putAll(obj("source_file", s(raw, "source_file"), "source_sheet", s(raw, "source_sheet"),
-					"source_locator", s(raw, "source_locator"), "source_excerpt", s(raw, "source_excerpt")));
+			for (String key : List.of("source_file", "source_sheet", "source_sheet_index", "source_row",
+					"source_locator", "source_excerpt", "source_issue", "source_issue_reason"))
+				if (raw.containsKey(key)) source.put(key, raw.get(key));
 			if (!map(raw.get("model_field_issues")).isEmpty())
 				source.put("model_field_issues", raw.get("model_field_issues"));
 		}
@@ -526,6 +653,7 @@ public class QuoteService {
 			throw new RuleException("标准清单导入时有识别行未被保留，请调整来源内容后重试");
 		for (Map<String, Object> row : list(body.get("rows")))
 			map(row.get("attributes")).remove("review_reason");
+		reuseConfirmedAiInputs(actor, quoteId, body, sources);
 		body.putAll(obj("ai_review_status", "pending", "ai_source_files", sourceFiles,
 				"ai_generated_at", OffsetDateTime.now().toString()));
 		repo.update("UPDATE quote_order SET body=? WHERE id=?", repo.json(body), quoteId);
@@ -535,6 +663,99 @@ public class QuoteService {
 				"special_row_count", list(body.get("source_special_rows")).size());
 	}
 
+	/** 相同原件只复用本人的已核验输入，新草稿仍需核验并按当前规则重新试算。 */
+	private void reuseConfirmedAiInputs(Actor actor, String quoteId, Map<String, Object> body,
+			List<Map<String, Object>> sources) {
+		String fingerprint = aiSourceFingerprint(sources);
+		if (fingerprint.isEmpty()) return;
+		body.put("ai_source_fingerprint", fingerprint);
+		for (var stored : repo.query("SELECT * FROM quote_order WHERE owner_id=? AND state<>'archived' ORDER BY updated_at DESC,created_at DESC", actor.id())) {
+			var previousQuote = repo.decode(stored);
+			var previous = map(previousQuote.get("body"));
+			if (s(previousQuote, "id").equals(quoteId) || !s(previous, "ai_review_status").equals("approved")) continue;
+			var imported = repo.find("quote_import", s(previous, "import_id"), false);
+			if (imported == null) continue;
+			var previousSources = list(map(imported.get("parsed")).get("ai_sources"));
+			if (!fingerprint.equals(aiSourceFingerprint(previousSources))) continue;
+			var oldFiles = aiSourceHashes(previousSources);
+			var newFiles = aiSourceHashes(sources);
+			Map<String, Map<String, Object>> confirmed = new HashMap<>();
+			Set<String> ambiguous = new HashSet<>();
+			for (var row : list(previous.get("rows"))) {
+				String key = aiSourceRowKey(row, oldFiles);
+				if (!key.isEmpty() && confirmed.putIfAbsent(key, row) != null) ambiguous.add(key);
+			}
+			int reused = 0;
+			Set<String> newKeys = new HashSet<>();
+			for (var row : list(body.get("rows"))) {
+				String key = aiSourceRowKey(row, newFiles);
+				if (!newKeys.add(key)) ambiguous.add(key);
+			}
+			for (var row : list(body.get("rows"))) {
+				String key = aiSourceRowKey(row, newFiles);
+				var old = confirmed.get(key);
+				if (old == null || ambiguous.contains(key)) continue;
+				for (String field : List.of("name", "spec", "quantity", "engineering_quantity", "unit", "remark",
+						"category", "candidate_id", "excluded", "exclude_reason", "product_rule", "product_rule_family", "installation"))
+					if (old.containsKey(field)) row.put(field, old.get(field));
+				// 已核验的空值和删除也是决定，不能被本次AI重新补回。
+				var attrs = new LinkedHashMap<>(map(old.get("attributes")));
+				attrs.remove("review_reason");
+				row.put("attributes", attrs);
+				row.put("source_text", s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark"));
+				row.put("source_issue_confirmed", yes(old.get("source_issue_confirmed"))
+						&& s(old, "source_issue_reason").equals(s(row, "source_issue_reason")));
+				reused++;
+			}
+			if (reused > 0) body.put("ai_reused_from", obj("quote_id", previousQuote.get("id"), "row_count", reused));
+			return;
+		}
+	}
+
+	private static String aiSourceFingerprint(List<Map<String, Object>> sources) {
+		if (sources.isEmpty()) return "";
+		List<String> hashes = new ArrayList<>();
+		for (var source : sources) {
+			String hash = aiSourceHash(source);
+			if (hash.isEmpty()) return "";
+			hashes.add(hash);
+		}
+		Collections.sort(hashes);
+		return String.join(":", hashes);
+	}
+
+	private static String aiSourceHash(Map<String, Object> source) {
+		if (blank(source.get("content_base64"))) return "";
+		try {
+			return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+					.digest(Base64.getDecoder().decode(s(source, "content_base64"))));
+		}
+		catch (IllegalArgumentException e) { return ""; }
+		catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+	}
+
+	private static Map<String, String> aiSourceHashes(List<Map<String, Object>> sources) {
+		Map<String, String> files = new HashMap<>();
+		Set<String> ambiguous = new HashSet<>();
+		for (var source : sources) {
+			String file = s(source, "filename"), hash = aiSourceHash(source);
+			if (files.putIfAbsent(file, hash) != null) ambiguous.add(file);
+		}
+		ambiguous.forEach(files::remove);
+		return files;
+	}
+
+	private static String aiSourceRowKey(Map<String, Object> row, Map<String, String> files) {
+		var origin = map(row.get("original"));
+		String hash = files.get(s(origin, "source_file")), locator = s(origin, "source_locator");
+		if (hash == null || hash.isEmpty() || locator.isEmpty()) return "";
+		// 原行位置而非AI生成的产品序号用于关联；空白表名保留来源定位。
+		return hash + "\n" + Objects.toString(origin.get("source_sheet"), "") + "\n" + locator;
+	}
+
+	/**
+	 * 按当前草稿重新生成待核验Excel，并写入报价ID与修订号，避免下载旧清单。
+	 */
 	public byte[] aiStandardWorkbook(Actor actor, String id) {
 		aiImport(actor, id);
 		var quote = quote(id, actor, false, false);
@@ -542,6 +763,9 @@ public class QuoteService {
 				id, n(quote.get("revision")).intValue());
 	}
 
+	/**
+	 * 校验AI回导清单并存储字段差异快照，保留文件供追溯；当前报价正文仍不变。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> previewAiInputImport(Actor actor, String id, byte[] bytes, String filename,
 			int expectedRevision) {
@@ -563,6 +787,10 @@ public class QuoteService {
 		return response;
 	}
 
+	/**
+	 * 应用已确认的AI清单预览，验证归属、报价ID、解析规则版本和基准修订号。
+	 * 替换清单后清除旧结果及核验记录，草稿重新进入pending等待人工确认。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> applyAiInputImport(Actor actor, String id, String importId, Map<String, Object> data) {
 		var quote = quote(id, actor, true, true);
@@ -596,6 +824,9 @@ public class QuoteService {
 				"product_row_count", parsed.get("product_row_count"), "special_row_count", parsed.get("special_row_count"));
 	}
 
+	/**
+	 * 根据来源序号返回原文件内容，便于核验AI整理结果；先校验报价访问权限。
+	 */
 	public Map<String, Object> aiSource(Actor actor, String id, int index) {
 		List<Map<String, Object>> sources = list(aiImport(actor, id).get("ai_sources"));
 		if (index < 0 || index >= sources.size())
@@ -605,6 +836,9 @@ public class QuoteService {
 				Base64.getDecoder().decode(s(source, "content_base64")));
 	}
 
+	/**
+	 * 定位AI草稿关联的标准清单快照，校验类型，供标准Excel和原始资料下载使用。
+	 */
 	private Map<String, Object> aiImport(Actor actor, String id) {
 		Map<String, Object> quote = quote(id, actor, false, false), body = map(quote.get("body"));
 		if (blank(body.get("ai_review_status")))
@@ -615,6 +849,9 @@ public class QuoteService {
 		return map(imported.get("parsed"));
 	}
 
+	/**
+	 * 提取客户、项目、联系信息、交货地点、日期和备注；仅接受合法日期与受限文本。
+	 */
 	private Map<String, Object> metadata(Map<String, Object> input) {
 		Map<String, Object> body = obj();
 		for (String key : List.of("customer", "project", "contact", "delivery_location", "quote_date", "note"))
@@ -630,6 +867,9 @@ public class QuoteService {
 		return body;
 	}
 
+	/**
+	 * 建立风管初始条件；影响价格的未选项保留空值或null，要求报价人员明确确认。
+	 */
 	private static Map<String, Object> ductDefaults() {
 		return obj("area_basis", "", "product_state", "", "shape", "", "zinc_layer", "40", "flange", "",
 				"include_common_punch", null, "tax_included", null, "corner_count", "", "clip_meters", "",
@@ -637,10 +877,17 @@ public class QuoteService {
 				"installation_amount", "", "include_freight", false);
 	}
 
+	/**
+	 * 建立设备初始条件，税口径和付款方案待选，默认不含运费。
+	 */
 	private static Map<String, Object> equipmentDefaults() {
 		return obj("tax_included", null, "payment_option", "", "include_freight", false, "region", "", "freight_amount", "");
 	}
 
+	/**
+	 * 新建报价系列第1版草稿，支持手工、单表和整份工作簿导入。
+	 * 自动识别采用复合引擎，并保留来源表、原始行及稳定row_id用于核验与回导。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> create(Actor actor, Map<String, Object> data) {
 		Map<String, Object> body = metadata(data), options = ductDefaults();
@@ -649,6 +896,7 @@ public class QuoteService {
 		String mode = str(data.getOrDefault("pricing_mode", "duct_v1"));
 		boolean wholeWorkbook = !blank(data.get("import_id"))
 				&& (data.containsKey("sheet_settings") || (mode.equals("auto_v1") && blank(data.get("sheet"))));
+		// 整份客户清单可能同时包含风管与设备，按每行识别，不能沿用单类整单模式。
 		if (wholeWorkbook)
 			mode = "auto_v1";
 		if (mode.equals("auto_v1")) {
@@ -705,6 +953,10 @@ public class QuoteService {
 		return obj("id", id);
 	}
 
+	/**
+	 * 生成报价记录摘要并标记试算是否过期，普通报价员按owner_id过滤。
+	 * 计价规则或未确认运费导致结果失效时，不向列表返回可用总价。
+	 */
 	public List<Map<String, Object>> listQuotes(Actor actor, boolean archived) {
 		String sql = "SELECT q.*, (SELECT COUNT(*) FROM quote_export x WHERE x.quote_id=q.id) export_count FROM quote_order q WHERE state "
 				+ (archived ? "=" : "<>") + " 'archived'" + (actor.manager() ? "" : " AND owner_id=?")
@@ -715,8 +967,7 @@ public class QuoteService {
 				actor.manager() ? new Object[] {} : new Object[] { actor.id() })) {
 			Map<String, Object> q = repo.decode(value), body = map(q.remove("body")),
 					calculation = map(q.remove("result"));
-			// pig serializes Long values as strings; keep UI counters numeric, including
-			// zero.
+			// pig会将Long序列化为字符串，这里把导出次数转成整数，确保页面的0值和计数判断正确。
 			q.put("export_count", n(q.get("export_count")).intValueExact());
 			q.putAll(obj("customer", body.get("customer"), "project", body.get("project"), "quote_date",
 					body.get("quote_date"), "row_count", list(body.get("rows")).size()));
@@ -732,6 +983,9 @@ public class QuoteService {
 		return result;
 	}
 
+	/**
+	 * 读取报价与历史导出列表；草稿试算失效时隐藏结果，避免按旧价格继续操作。
+	 */
 	public Map<String, Object> detail(Actor actor, String id) {
 		Map<String, Object> q = quote(id, actor, false, false), calculation = map(q.get("result"));
 		var body = map(q.get("body"));
@@ -747,6 +1001,9 @@ public class QuoteService {
 		return q;
 	}
 
+	/**
+	 * 清洗单行或独立安装项目字段；明确排除安装时必须填写原因。
+	 */
 	private static Map<String, Object> installationEntry(Map<String, Object> value) {
 		var entry = obj();
 		for (String key : List.of("name", "category", "project_id", "unit_price", "quantity", "unit", "product_state",
@@ -761,6 +1018,10 @@ public class QuoteService {
 		return entry;
 	}
 
+	/**
+	 * 保存草稿的客户信息、整单条件和产品参数，并清除旧试算结果。
+	 * 原始行不可静默删除、替换或调序；保留来源证据，新增行生成独立row_id。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> save(Actor actor, String id, Map<String, Object> data) {
 		Map<String, Object> q = quote(id, actor, true, true);
@@ -818,6 +1079,7 @@ public class QuoteService {
 		if (installationItems.size() > 1000)
 			throw new RuleException("独立安装项目不能超过1000行");
 		body.put("installation_items", installationItems.stream().map(QuoteService::installationEntry).toList());
+		// 原始客户清单是核价证据：允许标记不计价，但不能通过删除或替换行隐藏来源。
 		List<Map<String, Object>> rows = list(data.get("rows")), previous = list(old.get("rows"));
 		if (rows.size() < previous.size() || rows.size() > 10000)
 			throw new RuleException("产品行不能静默删除，请保留原行并标记不计价及原因");
@@ -830,7 +1092,8 @@ public class QuoteService {
 			if (i < previous.size() && !s(row, "row_id").equals(s(original, "row_id")))
 				throw new RuleException("原始清单行顺序不可变更或替换");
 			Map<String, Object> cleaned = obj();
-			for (String key : List.of("row_id", "source_row", "source_sheet", "original", "source_issue"))
+			for (String key : List.of("row_id", "source_row", "source_sheet", "source_sheet_index", "original", "source_issue",
+					"source_file", "source_locator", "source_excerpt", "source_issue_reason"))
 				cleaned.put(key, original.get(key));
 			for (String key : List.of("name", "spec", "quantity", "engineering_quantity", "unit", "remark", "category",
 					"exclude_reason", "candidate_id"))
@@ -851,6 +1114,11 @@ public class QuoteService {
 				safeAttrs.put(k, textValue(v, 300));
 			});
 			cleaned.put("attributes", safeAttrs);
+			String sourceReason = EquipmentReview.sourceReason(cleaned);
+			if (!sourceReason.isEmpty()) cleaned.putAll(obj("source_issue", true, "source_issue_reason", sourceReason));
+			if (yes(original.get("source_issue_confirmed")) && sourceInputChanged(original, cleaned))
+				cleaned.put("source_issue_confirmed", false);
+			// AI草稿以人工核验为门槛，保存时仅规范参数，核验问题继续从原始证据追溯。
 			if (blank(old.get("ai_review_status")))
 				EquipmentReview.refresh(cleaned);
 			else {
@@ -879,6 +1147,7 @@ public class QuoteService {
 			safe.add(cleaned);
 		}
 		body.put("rows", safe);
+		// 清单被修改后，原人工核验不再有效，必须重新确认后才能试算。
 		if (!blank(old.get("ai_review_status")))
 			body.put("ai_review_status", "pending");
 		body.put("duct_options", options);
@@ -891,6 +1160,17 @@ public class QuoteService {
 				repo.json(body), id);
 		repo.audit(actor, "edit_quote", id, obj("previous_body", old));
 		return obj("revision", n(q.get("revision")).intValue() + 1);
+	}
+
+	/** 参数再次变化时，旧的来源异常确认不能沿用。 */
+	static boolean sourceInputChanged(Map<String, Object> before, Map<String, Object> after) {
+		for (String key : List.of("name", "spec", "quantity", "engineering_quantity", "unit", "remark", "category"))
+			if (!s(before, key).equals(s(after, key))) return true;
+		var oldAttrs = new LinkedHashMap<>(map(before.get("attributes")));
+		var newAttrs = new LinkedHashMap<>(map(after.get("attributes")));
+		oldAttrs.remove("review_reason");
+		newAttrs.remove("review_reason");
+		return !oldAttrs.equals(newAttrs);
 	}
 
 	/**
@@ -1012,6 +1292,7 @@ public class QuoteService {
 		}
 		if (adjustments.isEmpty())
 			return false;
+		// 用补齐后的整单试算销售额判断运费门槛，付款条件和安装金额均按当前实现参与试算。
 		BigDecimal trialBeforePayment = add(n(parsed.get("material_total")), calculatedFreight,
 				n(parsed.get("installation_total")));
 		BigDecimal trialTotal = mul(trialBeforePayment, n(term.get("coefficient"))).setScale(0, RoundingMode.CEILING);
@@ -1049,6 +1330,9 @@ public class QuoteService {
 		return true;
 	}
 
+	/**
+	 * 按稳定源行ID把回导后补算的地区运费写入结果行，保留未含运费的基础价供追溯。
+	 */
 	private static void applyReviewFreightAdjustments(Map<String, Object> body, Map<String, Object> result,
 			List<Map<String, Object>> manualLines) {
 		Map<String, Integer> rowIndexes = new HashMap<>();
@@ -1077,7 +1361,7 @@ public class QuoteService {
 
 	/**
 	 * 兼容已经回导、但仍被旧逻辑保留为“设备运费待确认”的报价。正式导出时仅重算这一个派生项，
-	 * 不改人工录入的价格，也不增加报价修订号。
+	 * 保留人工确认的供货基础价，在其上补算地区运费并更新含运费单价、行金额和整单合计；修复步骤本身不递增修订号。
 	 */
 	private static boolean repairImportedReviewFreight(Map<String, Object> body, Map<String, Object> result,
 			List<Map<String, Object>> resources) {
@@ -1127,7 +1411,7 @@ public class QuoteService {
 
 	/**
 	 * 将已经预览确认的 Excel 校对结果写回当前报价修订版，并重新汇总材料、设备运费、安装费和付款条件。
-	 * 回导只更新 Excel 中实际修改过的行；未修改的系统试算结果保持原样。
+	 * 人工修改按来源行ID应用，设备运费补算及整单汇总等派生字段统一更新。
 	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> applyReviewImport(Actor actor, String id, String importId,
@@ -1147,7 +1431,7 @@ public class QuoteService {
 		Map<String, Object> body = map(q.get("body")), result = map(q.get("result"));
 		if (result.isEmpty())
 			throw new RuleException("当前报价尚未试算，不能应用校对结果");
-		// 预览记录可能由旧服务生成，应用时也重新判断一次，确保升级后无需重新导出校对版。
+		// 兼容旧预览中待确认的设备运费，应用时再次计算这一派生项。
 		resolveReviewEquipmentFreight(body, result, parsed, repo.catalogs());
 		List<Map<String, Object>> resultRows = list(result.get("rows")), bodyRows = list(body.get("rows")),
 				manualLines = list(parsed.get("lines"));
@@ -1206,6 +1490,7 @@ public class QuoteService {
 				&& (manualLines.stream().noneMatch(line -> s(line, "process").equals("设备运费"))
 						|| !freightResolution.isEmpty()))
 			issues.add("设备运费：" + s(effectiveFreight, "reason"));
+		// 区分设备运费已经计入逐行单价或单列，汇总时防止重复加入。
 		boolean equipmentFreightIncluded = yes(parsed.get("equipment_freight_included"));
 		BigDecimal materialTotal = n(parsed.get("material_total")),
 				equipmentFreightTotal = n(parsed.getOrDefault("equipment_freight_total", "0")),
@@ -1262,6 +1547,9 @@ public class QuoteService {
 		return obj("result", result, "revision", n(q.get("revision")).intValue() + 1);
 	}
 
+	/**
+	 * 校验导入文件名并去掉路径，只保留可显示的附件名称。
+	 */
 	private static String cleanFilename(String filename) {
 		if (filename == null || filename.length() > 255)
 			throw new RuleException("文件名无效");
@@ -1269,6 +1557,10 @@ public class QuoteService {
 		return clean.substring(clean.lastIndexOf('/') + 1);
 	}
 
+	/**
+	 * 执行报价状态流转，并统一核对归属与修订号。
+	 * 正式或已导出数据通过修订/归档保留历史；AI核验与重新识别只适用于合法草稿状态。
+	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> action(Actor actor, String id, String action, Map<String, Object> data) {
 		Map<String, Object> q = quote(id, actor, true, false);
@@ -1277,6 +1569,7 @@ public class QuoteService {
 		boolean exported = repo.scalar("SELECT COUNT(*) FROM quote_export WHERE quote_id=?", Integer.class, id) > 0;
 		Map<String, Object> body = map(q.get("body"));
 		switch (action) {
+			// 人工确认只解除AI清单核验门槛，缺失的实际计价条件仍由试算返回待确认。
 			case "approve-ai" -> {
 				if (!state.equals("draft") || !s(body, "ai_review_status").equals("pending"))
 					conflict("只有待核对的AI草稿可以确认");
@@ -1349,6 +1642,7 @@ public class QuoteService {
 						&& repo.scalar("SELECT COUNT(*) FROM quote_order WHERE family=?", Integer.class, q.get("family")) == 0)
 					repo.update("DELETE FROM quote_import WHERE id=?", s(body, "import_id"));
 			}
+			// 归档保存原状态，恢复时回到草稿或定稿，不把历史正式报价变成可编辑数据。
 			case "archive" -> {
 				if (state.equals("archived") || !exported)
 					conflict("只有已导出报价可以归档");
@@ -1366,10 +1660,11 @@ public class QuoteService {
 						"UPDATE quote_order SET state=?,body=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
 						previous, repo.json(body), id);
 			}
+			// 新修订沿用系列和来源正文，使用新ID/版本及空结果，历史报价和导出文件继续保留。
 			case "revise" -> {
 				if (state.equals("archived"))
 					conflict("归档报价请先恢复，再创建修订版");
-				// A persistent lock also works if an unexported family root was deleted.
+				// 固定锁记录不依赖报价系列的根记录，根草稿被删除后仍能安全分配下一版本号。
 				repo.catalogLock();
 				int version = repo.scalar("SELECT MAX(version) FROM quote_order WHERE family=?", Integer.class,
 						q.get("family")) + 1;
@@ -1389,7 +1684,7 @@ public class QuoteService {
 	}
 
 	/**
-	 * 导出校对版或正式报价。正式导出前会再次核对规则版本、当前生效指标和模板哈希，防止输出过期价格。
+	 * 导出校对版或正式报价。首次生成正式文件前会复核规则版本、当前生效指标和模板哈希；已有正式文件返回历史快照。
 	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> export(Actor actor, String id, Map<String, Object> data) {
@@ -1418,6 +1713,7 @@ public class QuoteService {
 		if (kind.equals("formal")) {
 			List<Map<String, Object>> existing = repo.query(
 					"SELECT id,filename FROM quote_export WHERE quote_id=? AND kind='formal' ORDER BY created_at", id);
+			// 已有正式文件时返回原快照，实现重复正式导出的幂等性。
 			if (!existing.isEmpty())
 				return existing.get(0);
 			repo.catalogLock();
@@ -1427,6 +1723,7 @@ public class QuoteService {
 			var resources = repo.catalogs();
 			if (productRulesChanged(map(q.get("body")), result, resources))
 				conflict("产品别名或组合规则已变更、停用或过期，请重新试算后生成正式报价");
+			// 原生自动计价行需复核当前生效指标；人工补价行保留manual_v1确认金额。
 			boolean hasEquipment = list(result.get("rows")).stream()
 				.anyMatch(r -> s(r, "status").equals("priced") && s(r, "pricing_mode").equals("equipment_v1"));
 			boolean hasDuct = list(result.get("rows")).stream()
@@ -1465,6 +1762,7 @@ public class QuoteService {
 				"INSERT INTO quote_export(id,quote_id,kind,filename,content,template_version,template_sha256,created_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
 				exportId, id, kind, filename, content, DuctExportService.TEMPLATE_VERSION,
 				DuctExportService.templateHash());
+		// 正式文件与定稿状态在同一事务写入，后续改价必须建立修订版。
 		if (kind.equals("formal"))
 			repo.update(
 					"UPDATE quote_order SET state='final',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -1473,6 +1771,9 @@ public class QuoteService {
 		return obj("id", exportId, "filename", filename);
 	}
 
+	/**
+	 * 通过关联报价核对访问权限，返回已经保存的文件快照，避免随当前指标重新生成历史文件。
+	 */
 	public Map<String, Object> download(Actor actor, String id) {
 		Map<String, Object> item = repo.find("quote_export", id, false);
 		if (item == null)
@@ -1481,6 +1782,9 @@ public class QuoteService {
 		return item;
 	}
 
+	/**
+	 * 仅向报价负责人返回最近200条操作摘要，详细快照仍保存在审计表。
+	 */
 	public List<Map<String, Object>> audit(Actor actor) {
 		leader(actor);
 		return repo

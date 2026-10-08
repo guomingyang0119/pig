@@ -1,7 +1,7 @@
-"""Migrate supported quotation rules and quote records from SQLite to MySQL.
+"""把旧SQLite风管指标与报价快照迁移到独立MySQL报价库。
 
-Passwords are read only from QUOTATION_DB_PASSWORD. The script deliberately
-does not migrate accounts, sessions, imports, exported files, or audit logs.
+密码仅从QUOTATION_DB_PASSWORD读取；账号、会话、导入、导出和审计不迁移。
+迁移前检查目标库并记录备份摘要，迁移后按规范化JSON哈希核对正文和计算结果。
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ QUOTE_TABLES = (
 )
 
 
+# 读取迁移源库、目标报价库、原记录统一映射的owner-id及备份目录。
 def args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True, type=Path)
@@ -42,6 +43,7 @@ def args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# 只从环境变量读取密码，避免把连接凭据写入命令参数或迁移报告。
 def mysql_password() -> str:
     password = os.environ.get("QUOTATION_DB_PASSWORD")
     if password is None:
@@ -49,6 +51,7 @@ def mysql_password() -> str:
     return password
 
 
+# 以UTF-8建立目标连接并关闭自动提交，由迁移阶段显式提交。
 def mysql_connection(options: argparse.Namespace, database: str | None = None):
     return pymysql.connect(
         host=options.host,
@@ -61,6 +64,7 @@ def mysql_connection(options: argparse.Namespace, database: str | None = None):
     )
 
 
+# 把源ISO日期解析为MySQL datetime所用的无时区值；此处直接移除时区标记，不换算时刻。
 def local_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -68,22 +72,27 @@ def local_datetime(value: str | None) -> datetime | None:
     return parsed.replace(tzinfo=None)
 
 
+# 按键排序和统一分隔符规范化JSON，允许忽略空白与键顺序差异进行内容核对。
 def canonical_json(value: str | None) -> str | None:
     if value is None:
         return None
     return json.dumps(json.loads(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+# 计算规范化JSON的SHA-256，验证迁移前后的业务字段一致。
 def digest(value: str | None) -> str | None:
     canonical = canonical_json(value)
     return None if canonical is None else hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# 拆分当前报价建表脚本：忽略整行SQL注释，再按分号分割简单语句。
 def split_sql(script: str) -> list[str]:
     lines = [line for line in script.splitlines() if not line.lstrip().startswith("--")]
     return [statement.strip() for statement in "\n".join(lines).split(";") if statement.strip()]
 
 
+# 记录目标报价表迁移前的JSON快照；二进制导出内容只存大小和哈希摘要。
+# 该文件用于迁移追溯，二进制摘要不能还原完整Excel附件。
 def target_backup(connection, backup_dir: Path, database: str) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -116,6 +125,8 @@ def target_backup(connection, backup_dir: Path, database: str) -> Path:
     return path
 
 
+# 按源数据校验、目标库检查、写入和迁移后哈希复核执行迁移。
+# 仅迁移旧duct_catalog及报价正文/结果，已有指标或报价时停止以免覆盖。
 def main() -> None:
     options = args()
     if not options.source.is_file():
@@ -135,6 +146,7 @@ def main() -> None:
     ).fetchall()
     if not catalogs:
         raise SystemExit("源库没有可迁移的 duct_catalog 指标")
+    # 在创建目标库前检查所有JSON可解析，避免坏快照进入迁移。
     for row in catalogs:
         canonical_json(row["body"])
     for row in quotes:
@@ -151,6 +163,7 @@ def main() -> None:
     root.close()
 
     target = mysql_connection(options, options.database)
+    # 先保存目标报价表快照摘要，再执行结构初始化与数据写入。
     backup = target_backup(target, options.backup_dir, options.database)
     with target.cursor() as cursor:
         for statement in split_sql(options.schema_sql.read_text(encoding="utf-8")):
@@ -164,6 +177,7 @@ def main() -> None:
                 f"目标库已有报价数据（指标{existing_catalogs}、报价{existing_quotes}），为防止覆盖已停止迁移"
             )
 
+        # 业务系列ID和正式版本沿用源库；创建者统一映射到指定pig账号。
         for row in catalogs:
             cursor.execute(
                 "INSERT INTO quote_catalog"
@@ -181,6 +195,7 @@ def main() -> None:
                     local_datetime(row["published_at"]),
                 ),
             )
+        # 旧报价正文、试算结果、状态和revision原样迁移，owner_id映射为指定账号。
         for row in quotes:
             cursor.execute(
                 "INSERT INTO quote_order"
@@ -207,6 +222,7 @@ def main() -> None:
         cursor.execute("SELECT id,body,result FROM quote_order")
         target_quotes = {row["id"]: row for row in cursor.fetchall()}
 
+    # 提交后按记录ID逐一核对JSON内容，不以行数相同代替报价快照校验。
     failures = []
     for row in catalogs:
         migrated = target_catalogs.get(row["id"])
@@ -221,6 +237,7 @@ def main() -> None:
     if failures:
         raise SystemExit("迁移后校验失败：" + "、".join(failures))
 
+    # 交付报告记录迁移范围和校验结论，不输出密码或连接凭据。
     report = {
         "source": str(options.source),
         "target": f"mysql://{options.host}:{options.port}/{options.database}",

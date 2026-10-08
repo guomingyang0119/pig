@@ -13,10 +13,15 @@ import java.util.*;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * 验证客户工作簿导入与正式/校对 Excel 导出的完整报价口径。
+ * 覆盖混合产品数量、法兰附项、材料/安装汇总、运费展示、中文金额及可读计算明细。
+ */
 class DuctWorkbookTests {
 
 	final DuctExportService exporter = new DuctExportService();
 
+	/** 验证共用工程量列按单位分派风管面积和设备数量，识别不同设备类别并保留未知材料的来源行。 */
 	@Test
 	void automaticImportUsesOneQuantityColumnAndKeepsUnknownRows() throws IOException {
 		byte[] bytes;
@@ -51,10 +56,12 @@ class DuctWorkbookTests {
 
 	Map<String, Object> body, result;
 
+	/** 用指定产品数、安装开关和法兰形式建立正式可报价测试样例。 */
 	void calculate(int count, boolean installation, String flange) throws IOException {
 		calculate(count, installation, flange, null);
 	}
 
+	/** 从固定种子加载风管/安装指标并试算，支持实际角钢米数，确认测试结果具备正式导出条件。 */
 	void calculate(int count, boolean installation, String flange, String actualFlangeMeters) throws IOException {
 		Map<String, Object> catalog = new ObjectMapper().readValue(DuctExportService.asset("duct-catalog-seed.json"),
 				Map.class);
@@ -89,6 +96,7 @@ class DuctWorkbookTests {
 		assertTrue(yes(result.get("formal_ready")), str(result.get("issues")));
 	}
 
+	/** 验证按本行实际 12 米另列的角钢法兰展示基础价和报价步骤，不再套按面积折算系数。 */
 	@Test
 	void actualAngleFlangeHasItsOwnReadableLineCalculation() throws IOException {
 		calculate(1, false, "angle", "12");
@@ -107,6 +115,10 @@ class DuctWorkbookTests {
 		}
 	}
 
+	/**
+	 * 验证校对版显示风管、圆法兰和安装的代入数字明细；人工改价后原主行轨迹退出，未改附项轨迹继续保留。
+	 * 正式文件不包含内部计算明细页。
+	 */
 	@Test
 	void reviewExportShowsCalculationDetailsForEachPricedLine() throws IOException {
 		calculate(1, true, "round");
@@ -164,6 +176,7 @@ class DuctWorkbookTests {
 		}
 	}
 
+	/** 验证设备校对明细显示阀体、人工、机构、毛利、材料税和本行取整，并在整单展示一次付款系数。 */
 	@Test
 	void equipmentReviewDetailsShowCostPartsAndFinalRowArithmetic() throws IOException {
 		var quote = obj("pricing_mode", "equipment_v1", "customer", "测试客户", "project", "排错工程",
@@ -204,6 +217,7 @@ class DuctWorkbookTests {
 		}
 	}
 
+	/** 验证校对备注带设备计价分支、选型和待确认识别类型；正式备注保留客户内容，去掉内部识别说明。 */
 	@Test
 	void reviewRemarksShowActualPricingLogicButFormalRemarksStayCustomerFacing() throws IOException {
 		var sources = List.of(
@@ -233,7 +247,7 @@ class DuctWorkbookTests {
 		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(review))) {
 			Sheet sheet = wb.getSheetAt(0);
 			assertEquals("客户原备注\n系统计价逻辑：电动调节阀", sheet.getRow(9).getCell(9).getStringCellValue());
-			assertEquals("选择型号：SWF-5；风机原备注\n系统计价逻辑：风机选型；选中型号：SWF-5",
+			assertEquals("选择型号：SWF-5；风机原备注；客户要求规格：风量1000 风压100\n系统计价逻辑：风机选型；选中型号：SWF-5",
 					sheet.getRow(10).getCell(9).getStringCellValue());
 			assertEquals("待确认：缺少宽度（mm）；现场复核\n系统识别类型：余压阀；计价状态：待确认",
 					sheet.getRow(11).getCell(9).getStringCellValue());
@@ -247,7 +261,7 @@ class DuctWorkbookTests {
 		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(formal))) {
 			Sheet sheet = wb.getSheetAt(0);
 			assertEquals("客户原备注", sheet.getRow(9).getCell(9).getStringCellValue());
-			assertEquals("选择型号：SWF-5；风机原备注", sheet.getRow(10).getCell(9).getStringCellValue());
+			assertEquals("选择型号：SWF-5；风机原备注；客户要求规格：风量1000 风压100", sheet.getRow(10).getCell(9).getStringCellValue());
 			for (Row row : sheet)
 				for (Cell cell : row)
 					if (cell.getCellType() == CellType.STRING)
@@ -255,6 +269,10 @@ class DuctWorkbookTests {
 		}
 	}
 
+	/**
+	 * 组合短/长清单、安装开关及三种法兰验证模板明细与付款前合计相等。
+	 * 同时核对公式清空、Logo、合并区域、打印设置和材料/安装列位，防止动态扩展破坏版式。
+	 */
 	@TestFactory
 	List<DynamicTest> templatesBalanceAcrossShortLongAndSeparateFlangeLines() {
 		List<DynamicTest> tests = new ArrayList<>();
@@ -359,6 +377,7 @@ class DuctWorkbookTests {
 		return tests;
 	}
 
+	/** 验证付款或安装指标尚未确认时仍可生成校对版，保留材料金额，安装和本行合计空白并标红。 */
 	@Test
 	void equipmentInstallationReviewExportsBeforePaymentIsSelected() throws IOException {
 		var quote = obj("pricing_mode", "equipment_v1", "customer", "测试客户", "project", "安装待确认工程",
@@ -392,6 +411,7 @@ class DuctWorkbookTests {
 		}
 	}
 
+	/** 验证人工只填写产品行安装总额，回导重新计算材料加安装的本行报价，并标记该合计为派生变化。 */
 	@Test
 	void installationReviewImportsOneRowTotalAndRecalculatesCombinedAmount() throws IOException {
 		calculate(1, true, "common");
@@ -421,6 +441,7 @@ class DuctWorkbookTests {
 			.compareTo(add(n(parsed.get("material_total")), n(parsed.get("installation_total")))));
 	}
 
+	/** 验证人工整单设备运费作为汇总行展示，修改金额后正确回导，材料和安装产品列位不被挤占。 */
 	@Test
 	void equipmentFreightUsesSummaryRowWithoutChangingReviewImport() throws IOException {
 		for (boolean installation : List.of(false, true)) {
@@ -470,6 +491,7 @@ class DuctWorkbookTests {
 		}
 	}
 
+	/** 验证人工已补齐行的正式报价清除待确认及内部计价提示，客户指定品牌等正常备注继续保留。 */
 	@Test
 	void formalExportRemovesResolvedPendingRemarkFromPreviouslyImportedLines() throws IOException {
 		var quote = obj("pricing_mode", "equipment_v1", "customer", "测试客户", "project", "备注清理",
@@ -488,6 +510,7 @@ class DuctWorkbookTests {
 		}
 	}
 
+	/** 验证自动运费已在设备单价中时不再另列；人工改材料金额回导后，汇总不重复追加自动运费。 */
 	@Test
 	void automaticEquipmentFreightStaysInProductPriceWithoutSummaryRow() throws IOException {
 		var quote = obj("pricing_mode", "equipment_v1", "customer", "测试客户", "project", "自动运费布局",
@@ -530,6 +553,7 @@ class DuctWorkbookTests {
 		assertEquals(0, n("1200").compareTo(n(parsed.get("before_payment_total"))));
 	}
 
+	/** 验证旧 xls 客户公式只读取缓存结果；两个业务字段映射同列时拒绝导入。 */
 	@Test
 	void legacyXlsReadsCachedValuesAndRequiresUniqueMappings() throws IOException {
 		byte[] bytes;
@@ -561,6 +585,67 @@ class DuctWorkbookTests {
 		assertThrows(RuleException.class, () -> importer.build(sh, 2, mapping));
 	}
 
+	/** 仅依据实际上标零把 70⁰C 还原为 70℃；普通 700C 不改写，并保留原字符证据。 */
+	@Test
+	void richTextTemperatureUsesSuperscriptEvidenceInXlsxAndXls() throws IOException {
+		for (boolean legacy : List.of(false, true)) {
+			byte[] bytes;
+			try (Workbook wb = legacy ? new HSSFWorkbook() : new XSSFWorkbook(); var out = new ByteArrayOutputStream()) {
+				Sheet sheet = wb.createSheet("温度清单");
+				Row header = sheet.createRow(0);
+				String[] headings = { "物品名称", "规格及型号", "单位", "材料数量" };
+				for (int i = 0; i < headings.length; i++) header.createCell(i).setCellValue(headings[i]);
+				for (int i = 0; i < 4; i++) {
+					Row row = sheet.createRow(i + 1);
+					row.createCell(0).setCellValue("防火阀");
+					String value = i == 2 ? "7000C 500×500" : "700C 500×500";
+					RichTextString text = wb.getCreationHelper().createRichTextString(value);
+					if (i != 1) {
+						Font superscript = wb.createFont();
+						superscript.setTypeOffset(Font.SS_SUPER);
+						int offset = i == 3 ? 0 : i == 2 ? 3 : 2;
+						text.applyFont(offset, i == 3 ? 3 : offset + 1, superscript);
+					}
+					row.createCell(1).setCellValue(text);
+					row.createCell(2).setCellValue("个");
+					row.createCell(3).setCellValue(1);
+				}
+				wb.write(out);
+				bytes = out.toByteArray();
+			}
+			var importer = new DuctImportService();
+			var sheet = importer.read(bytes, legacy ? "温度.xls" : "温度.xlsx").get(0);
+			assertEquals(0, sheet.get("sheet_index"));
+			var rows = list(importer.buildWorkbook(List.of(sheet), null).get("rows"));
+			assertEquals(List.of("70℃ 500×500", "700C 500×500", "700℃ 500×500", "700C 500×500"), rows.stream().map(r -> s(r, "spec")).toList());
+			var original = map(rows.get(0).get("original"));
+			assertEquals("700C 500×500", ((List<?>) original.get("original_cells")).get(1));
+			assertFalse(map(rows.get(1).get("original")).containsKey("original_cells"));
+		}
+	}
+
+	/** 真实产品数量异常仍可校对原文，金额为空且正式报价阻断，不以 0 代替数量。 */
+	@Test
+	void reviewExportKeepsInvalidProductQuantityAsTextWithoutPricingIt() throws IOException {
+		for (String quantity : List.of("待确认", "2台", "采购总金额（人民币元）：")) {
+			var source = obj("row_id", "invalid-1", "name", "待核实风阀", "spec", "500×500", "unit", "个", "quantity", quantity);
+			var quote = obj("pricing_mode", "equipment_v1", "customer", "客户", "project", "异常数量核对", "quote_date", "2026-10-07",
+					"equipment_options", obj(), "rows", List.of(source));
+			var calculation = obj("rows", List.of(obj("status", "pending", "pricing_mode", "equipment_v1", "reason", "数量不是有效数值")),
+					"fees", obj(), "subtotal", null, "total", null, "payment", obj(), "formal_ready", false);
+			byte[] bytes = exporter.write(quote, calculation, "INVALID-QUANTITY", false);
+			try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+				Sheet sheet = wb.getSheet("报价校对版");
+				assertEquals(quantity, sheet.getRow(9).getCell(6).getStringCellValue());
+				assertEquals(CellType.BLANK, sheet.getRow(9).getCell(7).getCellType());
+				assertEquals(CellType.BLANK, sheet.getRow(9).getCell(8).getCellType());
+				assertEquals(quantity, wb.getSheet(DuctExportService.REVIEW_METADATA_SHEET).getRow(10).getCell(9).getStringCellValue());
+			}
+			assertThrows(RuleException.class, () -> exporter.write(quote, calculation, "INVALID-QUANTITY", true));
+		}
+	}
+
+	/** 验证人民币中文大写支持零、万/亿分组及角分，正确处理数字中间和小数前的零。 */
 	@Test
 	void chineseAmountsHandleZerosAndCents() {
 		assertEquals("人民币零元整", DuctExportService.upperMoney(ZERO));
@@ -569,6 +654,7 @@ class DuctWorkbookTests {
 		assertEquals("人民币壹亿零壹万零壹元零伍分", DuctExportService.upperMoney(n("100010001.05")));
 	}
 
+	/** 验证设备模式保留单位、工况和需人工判断的行，混合模式将平方米分派到风管工程量、个数分派到设备数量。 */
 	@Test
 	void equipmentAndMixedImportsPreserveUnitsQuantitiesAndUncertainRows() throws IOException {
 		byte[] bytes;
@@ -593,7 +679,7 @@ class DuctWorkbookTests {
 		assertEquals(4, mapping.get("power"));
 		assertEquals(2, sheet.get("equipment_start_row"));
 		var rows = list(importer.build(sheet, 2, mapping, "equipment_v1").get("rows"));
-		assertEquals(4, rows.size(), "Equipment import keeps unclassified totals for human review");
+		assertEquals(3, rows.size(), "Confirmed summary rows remain source records rather than products");
 		assertEquals("2", rows.get(0).get("quantity"));
 		assertEquals("风机", rows.get(0).get("category"));
 		assertEquals("2.2", map(rows.get(0).get("attributes")).get("power"));

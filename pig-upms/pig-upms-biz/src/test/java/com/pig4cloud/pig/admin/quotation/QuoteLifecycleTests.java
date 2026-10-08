@@ -24,6 +24,10 @@ import java.util.function.Supplier;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * 报价业务流程回归：使用隔离H2数据库验证归属权限、修订并发、AI核验、试算、回导与历史导出。
+ * 通过真实仓储及事务执行服务方法，覆盖多步骤操作之间的数据保留和价格有效性。
+ */
 class QuoteLifecycleTests {
 
 	final QuoteService.Actor leader = new QuoteService.Actor(1, "测试负责人", true),
@@ -38,6 +42,9 @@ class QuoteLifecycleTests {
 
 	ObjectMapper json = new ObjectMapper();
 
+	/**
+	 * 每个用例创建独立内存库及报价业务表，使用代理仓储和事务模拟实际持久化操作。
+	 */
 	@BeforeEach
 	void setup() throws IOException {
 		var dataSource = new DriverManagerDataSource(
@@ -48,8 +55,7 @@ class QuoteLifecycleTests {
 		for (String statement : sql.split(";"))
 			if (!statement.isBlank())
 				jdbc.execute(statement);
-		// Production @Repository beans are proxied; direct field access on a proxy is
-		// unsafe.
+		// 模拟生产仓储代理，防止服务通过代理对象字段取连接而绕过正确的仓储调用。
 		ProxyFactory repositoryProxy = new ProxyFactory(new QuoteRepository(jdbc, json));
 		repositoryProxy.setProxyTargetClass(true);
 		repositoryProxy.addAdvice((MethodInterceptor) invocation -> invocation.proceed());
@@ -58,19 +64,32 @@ class QuoteLifecycleTests {
 		transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
 	}
 
+	/**
+	 * 在报价事务中执行单步操作，让行锁、回滚和多次请求的修订检查具有实际效果。
+	 */
 	<T> T tx(Supplier<T> action) {
 		return transaction.execute(status -> action.get());
 	}
 
+	/**
+	 * 从已读取记录取得当前revision，模拟页面提交的并发校验字段。
+	 */
 	Map<String, Object> rev(Map<String, Object> q) {
 		return obj("revision", q.get("revision"));
 	}
 
+	/**
+	 * 发布风管指标测试种子，供后续草稿试算与正式导出使用。
+	 */
 	void publish() {
 		String id = s(tx(() -> service.seed(leader)), "id");
 		tx(() -> service.catalogAction(leader, id, "publish", rev(repo.find("quote_catalog", id, false))));
 	}
 
+	/**
+	 * 覆盖完整long范围的账号ID，验证导入和报价归属不因数字范围或精度产生串号。
+	 * 相邻账号不能读入对方文件或报价，负责人仍可访问。
+	 */
 	@ParameterizedTest
 	@ValueSource(longs = { 1, 1000000000000000001L, 2105194329570525185L, Long.MAX_VALUE })
 	void accountIdsUseTheFullLongRangeWithoutAllowingAnotherAccountToImportOrRead(long ownerId) throws IOException {
@@ -105,6 +124,9 @@ class QuoteLifecycleTests {
 		assertEquals(id, service.detail(leader, id).get("id"));
 	}
 
+	/**
+	 * 账号ID支持扩大后，计价数字的绝对值上限仍保持不变，避免放宽金额输入。
+	 */
 	@Test
 	void accountIdFixKeepsQuotationNumericRangeLimits() {
 		assertEquals(0, n("1000000000000000000").compareTo(new BigDecimal("1e18")));
@@ -112,6 +134,10 @@ class QuoteLifecycleTests {
 		assertThrows(RuleException.class, () -> n("-1000000000000000001"));
 	}
 
+	/**
+	 * AI字段类型错误时保留原始行和来源，问题字段留空并在核验Excel中提示。
+	 * 人工补齐字段后重新下载，应反映当前草稿并移除对应问题提示。
+	 */
 	@Test
 	void malformedModelFieldKeepsAiDraftRowsAndReviewWarningAfterDownloadingCurrentDraft() throws Exception {
 		var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
@@ -192,6 +218,9 @@ class QuoteLifecycleTests {
 		finally { server.stop(0); }
 	}
 
+	/**
+	 * AI辅材数量异常时保留特殊来源行并阻止核验确认；补齐后可继续确认和试算。
+	 */
 	@Test
 	void malformedAccessoryQuantityKeepsPendingSpecialAndCanBeCorrectedBeforeApproval() throws Exception {
 		var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
@@ -297,6 +326,9 @@ class QuoteLifecycleTests {
 		finally { server.stop(0); }
 	}
 
+	/**
+	 * 验证AI标准清单建立未计价草稿，必须经过人工确认才能进入规则试算。
+	 */
 	@Test
 	void aiStandardWorkbookCreatesDraftAndRequiresReviewBeforeCalculation() throws Exception {
 		publish();
@@ -342,6 +374,9 @@ class QuoteLifecycleTests {
 		assertEquals("pending", map(service.detail(quoter, id).get("body")).get("ai_review_status"));
 	}
 
+	/**
+	 * 修改草稿后下载标准清单，内容应更新，源行标识仍保持稳定便于回导。
+	 */
 	@Test
 	void aiWorkbookDownloadReflectsCurrentDraftEditsWithStableRowKeys() throws Exception {
 		String id = s(tx(() -> service.createAiDraft(quoter,
@@ -363,6 +398,9 @@ class QuoteLifecycleTests {
 		}
 	}
 
+	/**
+	 * 人工核验Excel先生成字段差异，再写回原草稿，保留来源证据且不自动生成价格。
+	 */
 	@Test
 	void correctedAiWorkbookPreviewsAndUpdatesOriginalWithoutPricingOrLosingEvidence() throws Exception {
 		var source = obj("filename", "客户.png", "media_type", "image/png", "content_base64", Base64.getEncoder().encodeToString(new byte[]{4, 5}));
@@ -413,6 +451,144 @@ class QuoteLifecycleTests {
 		assertEquals(applied.get("revision"), after.get("revision"));
 	}
 
+	/**
+	 * 相同原件复用人工核验输入，但新草稿不能复用金额或跳过本次核验。
+	 */
+	@Test
+	void repeatedAiSourceKeepsConfirmedInputsAndRequiresFreshReviewWithoutReusingPrices() {
+		var sources = List.of(obj("filename", "客户原单.xlsx", "media_type", "application/octet-stream",
+				"content_base64", Base64.getEncoder().encodeToString(new byte[] { 1, 2, 3 })));
+		var source = obj("name", "多叶送风口", "spec", "500×(600+250)", "unit", "个", "quantity", "2",
+				"source_file", "客户原单.xlsx", "source_sheet", "设备", "source_locator", "第93行");
+		String first = s(tx(() -> service.createAiDraft(quoter, List.of(source), sources)), "id");
+		var draft = service.detail(quoter, first);
+		var body = map(draft.get("body"));
+		var row = list(body.get("rows")).get(0);
+		row.put("quantity", "3");
+		map(row.get("attributes")).putAll(obj("equipment_kind", "multi_leaf", "width", "500", "height", "600"));
+		body.put("revision", draft.get("revision"));
+		tx(() -> service.save(quoter, first, body));
+		var saved = service.detail(quoter, first);
+		tx(() -> service.action(quoter, first, "approve-ai", obj("revision", saved.get("revision"), "review_confirmed", true)));
+		repo.update("UPDATE quote_order SET result=? WHERE id=?", repo.json(obj("total", "9999")), first);
+		var renamed = List.of(obj("filename", "原单副本.xlsx", "media_type", "application/octet-stream",
+				"content_base64", sources.get(0).get("content_base64")));
+		var nextSource = new LinkedHashMap<>(source);
+		nextSource.putAll(obj("source_file", "原单副本.xlsx", "height", "850"));
+		String second = s(tx(() -> service.createAiDraft(quoter, List.of(nextSource), renamed)), "id");
+		var repeated = service.detail(quoter, second);
+		var repeatedBody = map(repeated.get("body"));
+		var repeatedRow = list(repeatedBody.get("rows")).get(0);
+		assertEquals("3", repeatedRow.get("quantity"));
+		assertEquals("600", map(repeatedRow.get("attributes")).get("height"));
+		assertEquals(first, map(repeatedBody.get("ai_reused_from")).get("quote_id"));
+		assertEquals("pending", repeatedBody.get("ai_review_status"));
+		assertNull(repeated.get("result"));
+		assertThrows(RuleException.class, () -> tx(() -> service.calculate(quoter, second, rev(repeated))));
+		assertEquals("9999", map(repo.find("quote_order", first, false).get("result")).get("total"));
+		assertEquals("原单副本.xlsx", map(repeatedRow.get("original")).get("source_file"));
+	}
+
+	@Test
+	void aiConfirmedInputReuseIsLimitedToIdenticalSourcesAndTheSameOwner() {
+		var source = obj("name", "防火阀", "spec", "500×500", "unit", "个", "quantity", "2",
+				"source_file", "客户原单.xlsx", "source_sheet", "设备", "source_locator", "第7行");
+		var sources = List.of(obj("filename", "客户原单.xlsx", "media_type", "application/octet-stream",
+				"content_base64", Base64.getEncoder().encodeToString(new byte[] { 1, 2 })));
+		String first = s(tx(() -> service.createAiDraft(quoter, List.of(source), sources)), "id");
+		var draft = service.detail(quoter, first);
+		var body = map(draft.get("body"));
+		list(body.get("rows")).get(0).put("quantity", "5");
+		body.put("revision", draft.get("revision"));
+		tx(() -> service.save(quoter, first, body));
+		String unconfirmed = s(tx(() -> service.createAiDraft(quoter, List.of(source), sources)), "id");
+		assertEquals("2", list(map(service.detail(quoter, unconfirmed).get("body")).get("rows")).get(0).get("quantity"));
+		var saved = service.detail(quoter, first);
+		tx(() -> service.action(quoter, first, "approve-ai", obj("revision", saved.get("revision"), "review_confirmed", true)));
+		for (var actor : List.of(other, leader)) {
+			String own = s(tx(() -> service.createAiDraft(actor, List.of(source), sources)), "id");
+			assertEquals("2", list(map(service.detail(actor, own).get("body")).get("rows")).get(0).get("quantity"));
+		}
+		var changed = List.of(obj("filename", "客户原单.xlsx", "media_type", "application/octet-stream",
+				"content_base64", Base64.getEncoder().encodeToString(new byte[] { 1, 9 })));
+		String changedId = s(tx(() -> service.createAiDraft(quoter, List.of(source), changed)), "id");
+		assertEquals("2", list(map(service.detail(quoter, changedId).get("body")).get("rows")).get(0).get("quantity"));
+	}
+
+	/** 人工改为性能选型并清空型号后，同原件重复处理不能恢复被否定的型号。 */
+	@Test
+	void repeatedAiSourceRetainsConfirmedEmptyFanModel() {
+		var source = obj("name", "风机", "spec", "SWF-I-7 L=6000 P=400 N=2.2", "model", "SWF-I-7",
+				"unit", "台", "quantity", "1", "source_file", "原单.xlsx", "source_sheet", "风机", "source_locator", "第2行");
+		var sources = List.of(obj("filename", "原单.xlsx", "content_base64", Base64.getEncoder().encodeToString(new byte[] { 4, 5 })));
+		String first = s(tx(() -> service.createAiDraft(quoter, List.of(source), sources)), "id");
+		var draft = service.detail(quoter, first);
+		var body = map(draft.get("body"));
+		var row = list(body.get("rows")).get(0);
+		row.put("spec", "L=6000 P=400 N=2.2");
+		map(row.get("attributes")).putAll(obj("model", "", "raw_model", ""));
+		body.put("revision", draft.get("revision"));
+		tx(() -> service.save(quoter, first, body));
+		var saved = service.detail(quoter, first);
+		tx(() -> service.action(quoter, first, "approve-ai", obj("revision", saved.get("revision"), "review_confirmed", true)));
+		String second = s(tx(() -> service.createAiDraft(quoter, List.of(source), sources)), "id");
+		var reused = list(map(service.detail(quoter, second).get("body")).get("rows")).get(0);
+		assertEquals("L=6000 P=400 N=2.2", reused.get("spec"));
+		assertEquals("", s(map(reused.get("attributes")), "model"));
+		assertEquals("", s(map(reused.get("attributes")), "raw_model"));
+	}
+
+	/** 不同空格表名仍是两张独立表，同原件复用不能把它们合并为歧义行。 */
+	@Test
+	void repeatedAiSourceKeepsDistinctWhitespaceSheets() {
+		var firstRow = obj("name", "防火阀", "spec", "500×500", "unit", "个", "quantity", "2",
+				"source_file", "原单.xlsx", "source_sheet", " ", "source_sheet_index", 0, "source_locator", "第7行");
+		var secondRow = new LinkedHashMap<>(firstRow);
+		secondRow.putAll(obj("source_sheet", "     ", "source_sheet_index", 1));
+		var input = List.of(firstRow, secondRow);
+		var sources = List.of(obj("filename", "原单.xlsx", "content_base64", Base64.getEncoder().encodeToString(new byte[] { 6, 7 })));
+		String first = s(tx(() -> service.createAiDraft(quoter, input, sources)), "id");
+		var draft = service.detail(quoter, first);
+		var body = map(draft.get("body"));
+		list(body.get("rows")).get(0).put("quantity", "3");
+		list(body.get("rows")).get(1).put("quantity", "4");
+		body.put("revision", draft.get("revision"));
+		tx(() -> service.save(quoter, first, body));
+		var saved = service.detail(quoter, first);
+		tx(() -> service.action(quoter, first, "approve-ai", obj("revision", saved.get("revision"), "review_confirmed", true)));
+		String next = s(tx(() -> service.createAiDraft(quoter, input, sources)), "id");
+		var reused = list(map(service.detail(quoter, next).get("body")).get("rows"));
+		assertEquals("3", reused.get(0).get("quantity"));
+		assertEquals("4", reused.get(1).get("quantity"));
+	}
+
+	@Test
+	void savingAiInputKeepsSourceIssueEvidenceAndInvalidatesPriorConfirmationAfterChanges() {
+		var source = obj("name", "风口800×(1050+250)", "spec", "850×(1000+250)", "unit", "个", "quantity", "2",
+				"source_file", "原单.xlsx", "source_sheet", "设备", "source_locator", "第99行",
+				"source_issue", true, "source_issue_reason", "名称与技术特征的尺寸不一致，请核实");
+		String id = s(tx(() -> service.createAiDraft(quoter, List.of(source), List.of())), "id");
+		var draft = service.detail(quoter, id);
+		var body = map(draft.get("body"));
+		var row = list(body.get("rows")).get(0);
+		row.put("source_issue_confirmed", true);
+		body.put("revision", draft.get("revision"));
+		tx(() -> service.save(quoter, id, body));
+		var saved = service.detail(quoter, id);
+		var savedBody = map(saved.get("body"));
+		var savedRow = list(savedBody.get("rows")).get(0);
+		assertTrue(yes(savedRow.get("source_issue")));
+		assertEquals("名称与技术特征的尺寸不一致，请核实", savedRow.get("source_issue_reason"));
+		assertTrue(yes(savedRow.get("source_issue_confirmed")));
+		savedRow.put("spec", "900×(1000+250)");
+		savedBody.put("revision", saved.get("revision"));
+		tx(() -> service.save(quoter, id, savedBody));
+		assertFalse(yes(list(map(service.detail(quoter, id).get("body")).get("rows")).get(0).get("source_issue_confirmed")));
+	}
+
+	/**
+	 * 拒绝错误报价、缺失核验结构及重排行的AI清单，防止差异套用到错误产品。
+	 */
 	@Test
 	void correctedAiWorkbookRejectsWrongQuoteMissingReviewAndReorderedMainRows() throws Exception {
 		var rows = List.of(obj("name", "防火阀", "spec", "500×500", "unit", "个", "quantity", "2"),
@@ -433,6 +609,9 @@ class QuoteLifecycleTests {
 		}
 	}
 
+	/**
+	 * 核验文件未改动时不误报差异，并按当前草稿辅材选项处理原清单。
+	 */
 	@Test
 	void correctedAiWorkbookUnchangedFallbacksHaveNoDifferencesAndUseCurrentAccessoryOptions() throws Exception {
 		String id = s(tx(() -> service.createAiDraft(quoter, List.of(
@@ -453,6 +632,9 @@ class QuoteLifecycleTests {
 		assertEquals(0, preview.get("changed_row_count"));
 	}
 
+	/**
+	 * 产品描述变化后清除旧识别结果，保留人工明确填写的输入供重新核验。
+	 */
 	@Test
 	void correctedAiWorkbookTextEditClearsOldClassificationAndParametersButKeepsExplicitInputs() throws Exception {
 		String id = s(tx(() -> service.createAiDraft(quoter,
@@ -479,6 +661,9 @@ class QuoteLifecycleTests {
 		assertEquals("800", EquipmentPricingEngine.parseAttributes(row).get("width"));
 	}
 
+	/**
+	 * 核验文件清空数量时应如实回写，同时保留既有整单条件和明确排除项。
+	 */
 	@Test
 	void correctedAiWorkbookClearsQuantityAndPreservesExistingQuoteConditionsAndExclusions() throws Exception {
 		String id = s(tx(() -> service.createAiDraft(quoter, List.of(obj("name", "防火阀", "spec", "500×500", "unit", "个", "quantity", "2", "engineering_quantity", "2")), List.of())), "id");
@@ -515,6 +700,9 @@ class QuoteLifecycleTests {
 		assertNull(after.get("result"));
 	}
 
+	/**
+	 * 解析规则升级后拒绝旧预览记录，要求重新上传以生成当前规则下的差异。
+	 */
 	@Test
 	void correctedAiWorkbookPreviewFromOldParserRulesCannotBeApplied() throws Exception {
 		String id = s(tx(() -> service.createAiDraft(quoter, List.of(obj("name", "止回阀", "spec", "500×500", "unit", "个", "quantity", "13")), List.of())), "id");
@@ -531,6 +719,9 @@ class QuoteLifecycleTests {
 		assertEquals(before.get("body"), after.get("body"));
 	}
 
+	/**
+	 * AI标准清单中的辅材汇总来源行仍可核对，不能在建立草稿时静默丢弃。
+	 */
 	@Test
 	void aiDraftKeepsAccessorySummaryRowsForHumanReview() {
 		var materials = List.of(
@@ -550,6 +741,9 @@ class QuoteLifecycleTests {
 		assertEquals("pending", body.get("ai_review_status"));
 	}
 
+	/**
+	 * AI建稿阶段保留设备清单，计价是否完整交给人工核验后的报价引擎判断。
+	 */
 	@Test
 	void aiDraftDoesNotPrejudgeWhetherEquipmentCanBePriced() {
 		var material = obj("name", "壁式轴流风机带防火阀", "spec", "L=600m³/h P=40Pa", "unit", "台", "quantity", "1");
@@ -564,6 +758,9 @@ class QuoteLifecycleTests {
 		assertFalse(map(list(saved.get("rows")).get(0).get("attributes")).containsKey("review_reason"));
 	}
 
+	/**
+	 * 验证整份Excel各表独立识别列映射，合并后保持表/行顺序、来源与唯一产品行ID。
+	 */
 	@Test
 	void automaticImportCombinesEveryWorksheetWithIndependentHeadersAndOriginalOrder() throws Exception {
 		publish();
@@ -639,6 +836,9 @@ class QuoteLifecycleTests {
 		}
 	}
 
+	/**
+	 * 无法识别的非空表必须人工核对或说明排除原因，避免漏报整张客户清单。
+	 */
 	@Test
 	void automaticWorkbookImportRequiresReviewOfUnrecognizedNonemptySheets() throws Exception {
 		byte[] bytes;
@@ -668,6 +868,9 @@ class QuoteLifecycleTests {
 		assertEquals("设备", list(body.get("rows")).get(0).get("source_sheet"));
 	}
 
+	/**
+	 * 验证唯一整单运费选择同时影响风管和设备计算，导出文案与试算口径一致。
+	 */
 	@Test
 	void wholeOrderFreightControlsBothEnginesAndExport() throws Exception {
 		publish();
@@ -696,7 +899,7 @@ class QuoteLifecycleTests {
 		var freightBody = map(q.get("body"));
 		freightBody.put("include_freight", true);
 		freightBody.put("revision", q.get("revision"));
-		// The single order setting is authoritative even if old client fields disagree.
+		// 即使旧客户端分别传入矛盾值，也必须以唯一整单运费选择为准。
 		map(freightBody.get("duct_options")).put("include_freight", false);
 		map(freightBody.get("equipment_options")).put("include_freight", false);
 		tx(() -> service.save(quoter, id, freightBody));
@@ -754,6 +957,9 @@ class QuoteLifecycleTests {
 		assertFalse(map(repo.find("quote_order", id, false).get("body")).containsKey("include_freight"));
 	}
 
+	/**
+	 * 单类历史草稿重新识别时继承已有运费选择，避免转换模式改变报价条件。
+	 */
 	@Test
 	void singleCategoryLegacyFreightMigratesWithoutLosingItsChoice() {
 		for (String mode : List.of("duct_v1", "equipment_v1")) {
@@ -772,6 +978,9 @@ class QuoteLifecycleTests {
 		}
 	}
 
+	/**
+	 * 旧复合草稿的两个运费值冲突时要求明确选择，已正式导出的历史文件仍保持原快照。
+	 */
 	@Test
 	void legacyFreightConflictRequiresExplicitWholeOrderChoiceWithoutRewritingHistory() {
 		String id = s(tx(() -> service.create(quoter, obj("pricing_mode", "mixed_v1"))), "id");
@@ -795,6 +1004,9 @@ class QuoteLifecycleTests {
 		assertEquals(true, map(normalized.get("equipment_options")).get("include_freight"));
 	}
 
+	/**
+	 * 新建自动报价及旧草稿转换都保留原行、来源与安装等条件，并清除失效试算。
+	 */
 	@Test
 	void automaticQuoteCreationAndExistingDraftConversionPreserveOriginalRows() {
 		String autoId = s(tx(() -> service.create(quoter, obj("pricing_mode", "auto_v1"))), "id");
@@ -838,6 +1050,9 @@ class QuoteLifecycleTests {
 				() -> tx(() -> service.action(quoter, id, "auto-classify", rev(after))));
 	}
 
+	/**
+	 * 纯风管自动报价可仅用风管指标计算；编辑产品后按当前清单重新识别类别。
+	 */
 	@Test
 	void automaticDuctOnlyQuoteNeedsOnlyDuctCatalogAndReclassifiesEditedRows() {
 		publish();
@@ -861,6 +1076,9 @@ class QuoteLifecycleTests {
 		assertNull(saved.get("result"));
 	}
 
+	/**
+	 * 设备草稿转换到逐行识别时保留付款和旧安装选择，避免默认选项覆盖已有条件。
+	 */
 	@Test
 	void equipmentDraftConversionKeepsPaymentAndLegacyInstallationSelection() {
 		String id = s(tx(() -> service.create(quoter, obj("pricing_mode", "equipment_v1"))), "id");
@@ -877,6 +1095,9 @@ class QuoteLifecycleTests {
 		assertEquals(true, map(converted.get("installation_options")).get("included"));
 	}
 
+	/**
+	 * 覆盖安装指标校验、项目保存及发布后只读；生效指标变更后拒绝旧结果正式导出。
+	 */
 	@Test
 	void installationLifecycleValidatesPreservesEntriesAndBlocksChangedCatalogExport() throws Exception {
 		assertThrows(ResponseStatusException.class, () -> service.installationSeed(quoter));
@@ -902,7 +1123,7 @@ class QuoteLifecycleTests {
 		var savedBody = map(saved.get("body"));
 		assertTrue(yes(map(savedBody.get("duct_options")).get("include_installation")));
 		assertEquals("7.21", map(list(savedBody.get("rows")).get(0).get("installation")).get("unit_price"));
-		// An older client omitting a row's installation data cannot erase it.
+		// 旧客户端遗漏行级安装字段时，已保存的安装条件仍应保留。
 		list(savedBody.get("rows")).get(0).remove("installation");
 		savedBody.put("revision", saved.get("revision"));
 		tx(() -> service.save(quoter, id, savedBody));
@@ -955,6 +1176,9 @@ class QuoteLifecycleTests {
 		assertArrayEquals(historical, (byte[]) service.download(quoter, s(formal, "id")).get("content"));
 	}
 
+	/**
+	 * 安装仍待补价时，校对回导保留已完成材料金额，整单继续阻止正式报价。
+	 */
 	@Test
 	void reviewImportKeepsMaterialAmountWhenInstallationIsStillPending() throws Exception {
 		var seed = service.installationSeed(leader);
@@ -1001,6 +1225,9 @@ class QuoteLifecycleTests {
 		assertNull(result.get("total"));
 	}
 
+	/**
+	 * 建立带原始风管产品行的可编辑草稿，供保存、权限和状态测试复用。
+	 */
 	Map<String, Object> draft() {
 		String id = s(tx(() -> service.create(quoter, obj("customer", "测试客户", "project", "验证工程"))), "id");
 		Map<String, Object> q = service.detail(quoter, id), b = map(q.get("body"));
@@ -1015,6 +1242,9 @@ class QuoteLifecycleTests {
 		return service.detail(quoter, id);
 	}
 
+	/**
+	 * 建立已发布风管指标及完整试算报价，供正式导出条件测试复用。
+	 */
 	Map<String, Object> calculated() {
 		publish();
 		Map<String, Object> q = draft();
@@ -1022,6 +1252,9 @@ class QuoteLifecycleTests {
 		return service.detail(quoter, s(q, "id"));
 	}
 
+	/**
+	 * 串联草稿、试算、正式导出、归档恢复及新修订，核对归属权限与历史文件保留。
+	 */
 	@Test
 	void fullLifecyclePreservesHistoryAndOwnerAccess() throws IOException {
 		Map<String, Object> q = calculated();
@@ -1055,6 +1288,9 @@ class QuoteLifecycleTests {
 		assertThrows(ResponseStatusException.class, () -> service.download(other, s(exp, "id")));
 	}
 
+	/**
+	 * 保存并发布独立设备指标测试版本，供设备及复合报价测试使用。
+	 */
 	Map<String, Object> publishEquipment() {
 		var seed = service.equipmentSeed(leader);
 		list(seed.get("purchased")).add(obj("id", "test", "name", "测试设备", "model", "TEST", "cost", "75", "unit", "台"));
@@ -1063,6 +1299,9 @@ class QuoteLifecycleTests {
 		return repo.find("quote_catalog", id, false);
 	}
 
+	/**
+	 * 按指定内部计价模式和产品行建立设备测试报价，并配置明确的供货条件。
+	 */
 	Map<String, Object> equipmentQuote(String mode, List<Map<String, Object>> rows) {
 		String id = s(tx(() -> service.create(quoter, obj("pricing_mode", mode, "customer", "设备验收客户"))), "id");
 		var q = service.detail(quoter, id);
@@ -1078,11 +1317,17 @@ class QuoteLifecycleTests {
 		return service.detail(quoter, id);
 	}
 
+	/**
+	 * 提供尺寸、数量和类别明确的设备行，便于核对金额与导出。
+	 */
 	Map<String, Object> equipmentRow() {
 		return obj("name", "测试设备", "category", "外购设备", "quantity", "2", "unit", "台", "attributes",
 				obj("equipment_kind", "purchased", "model", "TEST"));
 	}
 
+	/**
+	 * 读取设备种子不写库，设备与风管指标仍分别维护系列和发布生命周期。
+	 */
 	@Test
 	void equipmentSeedIsReadOnlyAndCatalogsHaveIndependentPublicationLifecycle() {
 		assertThrows(ResponseStatusException.class, () -> service.equipmentSeed(quoter));
@@ -1107,6 +1352,9 @@ class QuoteLifecycleTests {
 		assertEquals(1, DuctCatalog.active(service.resources(), java.time.LocalDate.now()).size());
 	}
 
+	/**
+	 * 复合报价保持原产品顺序，设备整数金额与风管小数金额按各自规则导出。
+	 */
 	@Test
 	void mixedQuotePreservesOrderIntegerEquipmentAndDecimalDuctExports() throws IOException {
 		publishEquipment();
@@ -1142,6 +1390,9 @@ class QuoteLifecycleTests {
 		}
 	}
 
+	/**
+	 * 人工确认风机候选后保存选择，正式文件展示所选工况而非原需求占位值。
+	 */
 	@Test
 	void fanCandidatePersistsAndExportsActualSelectedPerformance() throws IOException {
 		var catalog = publishEquipment();
@@ -1180,13 +1431,16 @@ class QuoteLifecycleTests {
 			String text = workbookText(wb);
 			assertTrue(text.contains(s(selected, "model")) && text.contains("风量" + s(selected, "airflow"))
 					&& text.contains("风压" + s(selected, "pressure")));
-			assertEquals("选择型号：" + s(selected, "model") + "；客户原备注",
+			assertEquals("选择型号：" + s(selected, "model") + "；客户原备注；客户要求规格：风量1000 风压100 功率2.2kW",
 					wb.getSheetAt(0).getRow(9).getCell(9).getStringCellValue());
 			assertFalse(text.contains("按风量、风压选择有完整成本的最小合格规格"));
 			assertFalse(text.contains("unit_cost") || text.contains("电机成本") || text.contains("壳体成本"));
 		}
 	}
 
+	/**
+	 * 设备缺少选型或价格时保留在校对版，人工补价回导前不得正式导出。
+	 */
 	@Test
 	void equipmentPendingRowsRemainInDraftAndCannotBeFormallyExported() throws IOException {
 		publishEquipment();
@@ -1272,6 +1526,9 @@ class QuoteLifecycleTests {
 		assertEquals("final", service.detail(quoter, s(q, "id")).get("state"));
 	}
 
+	/**
+	 * 设备补价后重新判断整单运费门槛，自动计入地区运费并修复旧回导遗留的待确认行。
+	 */
 	@Test
 	void reviewImportRecalculatesAutomaticEquipmentFreightAfterPendingPricesAreCompleted() throws IOException {
 		publishEquipment();
@@ -1363,6 +1620,9 @@ class QuoteLifecycleTests {
 		}
 	}
 
+	/**
+	 * 小额整单设备补价后仍需明确人工运费；再次校对填0也应视为已确认并允许正式报价。
+	 */
 	@Test
 	void completingSmallOrderWithoutFreightPlaceholderStillRequiresManualFreight() throws IOException {
 		publishEquipment();
@@ -1409,6 +1669,9 @@ class QuoteLifecycleTests {
 		assertEquals(0, n(map(finalQuote.get("result")).get("total")).compareTo(n("100")));
 	}
 
+	/**
+	 * 收集Excel中的文字单元格，供导出文案断言使用。
+	 */
 	static String workbookText(Workbook wb) {
 		StringBuilder text = new StringBuilder();
 		for (Sheet s : wb)
@@ -1419,6 +1682,9 @@ class QuoteLifecycleTests {
 		return text.toString();
 	}
 
+	/**
+	 * 试算后暂停模板或停用指标时，正式导出必须再次校验，校对版仍可用于核价。
+	 */
 	@Test
 	void formalExportRechecksTemplatePauseAndEffectiveCatalog() {
 		Map<String, Object> q = calculated();
@@ -1437,6 +1703,9 @@ class QuoteLifecycleTests {
 				() -> tx(() -> service.export(quoter, id, obj("revision", q.get("revision"), "kind", "formal"))));
 	}
 
+	/**
+	 * 旧修订号不能覆盖新保存，原产品行不能通过提交空列表静默删除。
+	 */
 	@Test
 	void staleRevisionAndSilentRowRemovalAreRejected() {
 		Map<String, Object> q = draft();
@@ -1452,6 +1721,9 @@ class QuoteLifecycleTests {
 		assertThrows(RuleException.class, () -> tx(() -> service.save(quoter, id, missing)));
 	}
 
+	/**
+	 * 存在待确认项时仅能导出校对版，引擎版本过期后必须重新试算才能继续导出。
+	 */
 	@Test
 	void pendingQuoteAllowsOnlyDraftAndStaleEngineBlocksExports() {
 		Map<String, Object> q = draft();
@@ -1469,6 +1741,9 @@ class QuoteLifecycleTests {
 				() -> tx(() -> service.export(quoter, id, obj("revision", pending.get("revision"), "kind", "draft"))));
 	}
 
+	/**
+	 * 限制负责人权限及已发布版本修改，并验证停用最新版本不会自动退回旧价格。
+	 */
 	@Test
 	void catalogChangesRequireLeaderAndPublishedVersionsAreImmutable() {
 		publish();
@@ -1488,6 +1763,9 @@ class QuoteLifecycleTests {
 				() -> service.catalogAction(leader, id, "reactivate", rev(repo.find("quote_catalog", id, false)))));
 	}
 
+	/**
+	 * 两个请求使用相同修订号并发保存时只能一个成功，验证行锁与revision共同防止覆盖。
+	 */
 	@Test
 	void concurrentSavesCannotOverwriteEachOther() throws Exception {
 		Map<String, Object> q = draft();
@@ -1513,6 +1791,9 @@ class QuoteLifecycleTests {
 		}
 	}
 
+	/**
+	 * 表头映射有歧义时不自动选列；公式警告、合并备注和文件归属继续保留。
+	 */
 	@Test
 	void uploadMapsOnlyUniqueHeadersAndPreservesFormulaWarningsAndMergedRemarks() throws IOException {
 		byte[] bytes;

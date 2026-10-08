@@ -26,6 +26,8 @@ spring:
               uri: lb://pig-auth
               predicates:
                 - Path=/auth/**
+            # AI客户资料整理耗时较长，优先匹配此报价导入路由并使用10分钟响应超时。
+            # 其他报价操作继续走普通admin路由的响应超时。
             - id: pig-upms-ai-import
               uri: lb://pig-upms-biz
               predicates:

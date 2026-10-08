@@ -10,9 +10,13 @@ import java.util.*;
 
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 
-/** Reads a system-generated review workbook after a quoter completes it in Excel. */
+/**
+ * 读取试算后由报价员完善金额的可编辑校对版，并生成回导差异和付款前汇总。
+ * 本流程处理人工价格，区别于 AI 清单回导；文件身份及修订号必须匹配当前报价，写回由报价服务确认完成。
+ */
 final class QuoteReviewImportService {
 
+	// 与隐藏基准列一一对应，包含人工可修改金额和系统重算的本行总额。
 	private static final List<String> FIELDS = List.of("name", "thickness", "spec", "process", "unit", "quantity",
 			"material_unit", "material_amount", "installation_amount", "line_total", "remark");
 
@@ -22,6 +26,10 @@ final class QuoteReviewImportService {
 			Map.entry("material_amount", "材料金额"), Map.entry("installation_amount", "安装费用"),
 			Map.entry("line_total", "本行报价"), Map.entry("remark", "备注"));
 
+	/**
+	 * 验证系统隐藏元数据、报价 ID、修订号及兼容模板列结构，再按保存的基准行读取可见金额。
+	 * 区分人工修改和自动补算字段，保留未补全行；材料、设备运费及安装分别汇总，设备运费已含在单价时不重复加总。
+	 */
 	Map<String, Object> read(byte[] bytes, String filename, String expectedQuoteId, int expectedRevision) {
 		if (filename == null || !filename.toLowerCase(Locale.ROOT).endsWith(".xlsx"))
 			throw new RuleException("请上传系统导出的xlsx校对版");
@@ -38,7 +46,8 @@ final class QuoteReviewImportService {
 			int workbookRevision = integer(properties.get("revision"), "报价版本");
 			if (workbookRevision != expectedRevision)
 				throw new RuleException("报价单在校对版导出后已有修改，请重新导出校对版");
-			if (!Set.of(DuctExportService.TEMPLATE_VERSION, "review-roundtrip-20261006-v10", "review-roundtrip-20260930-v9")
+			// 只兼容明确列出的回导版本，未知模板需重新导出，避免把金额按错误列位解释。
+			if (!Set.of(DuctExportService.TEMPLATE_VERSION, "review-roundtrip-20261006-v11", "review-roundtrip-20261006-v10", "review-roundtrip-20260930-v9")
 					.contains(properties.get("template_version")))
 				throw new RuleException("校对版模板已更新，请重新导出后填写");
 			int columns = integer(properties.get("column_count"), "校对版列数");
@@ -73,6 +82,7 @@ final class QuoteReviewImportService {
 						booleanValue(metaRow.getCell(3), evaluator)));
 				normalizeNumbers(baseline, visibleRow);
 				normalizeNumbers(current, visibleRow);
+				// 原待确认行或已有金额的行仍需检查完整性，未计价说明行不要求凭空补价。
 				boolean required = yes(current.get("was_pending")) || !blank(baseline.get("material_amount"))
 						|| !blank(baseline.get("installation_amount"));
 				Set<String> derivedFields = new LinkedHashSet<>();
@@ -100,6 +110,7 @@ final class QuoteReviewImportService {
 				}
 				boolean changed = false, priceChanged = false;
 				List<Map<String, Object>> rowChanges = new ArrayList<>();
+				// 补算的单价、金额和清理备注记为派生变化；真正人工改价单独统计，便于确认预览。
 				for (String field : FIELDS) {
 					String before = s(baseline, field), after = s(current, field);
 					if (!before.equals(after)) {
@@ -137,6 +148,7 @@ final class QuoteReviewImportService {
 			if (lines.isEmpty())
 				throw new RuleException("校对版没有可回导的报价明细");
 			long unchanged = lines.stream().filter(line -> !yes(line.get("changed")) && !yes(line.get("pending"))).count();
+			// 付款系数由整单报价服务继续统一应用一次；此处只返回付款前合计。
 			BigDecimal beforePayment = add(materialTotal, equipmentFreightIncluded ? ZERO : equipmentFreightTotal,
 					installationTotal);
 			return obj("type", "review_import_v1", "quote_id", expectedQuoteId, "workbook_revision", workbookRevision,
@@ -157,6 +169,7 @@ final class QuoteReviewImportService {
 		}
 	}
 
+	/** 人工金额补齐后移除已解决的待确认提示和内部校对逻辑行，同时保留客户正常备注。 */
 	private static String resolvedRemark(String remark) {
 		List<String> kept = new ArrayList<>();
 		for (String line : remark.split("\\R")) {
@@ -173,6 +186,7 @@ final class QuoteReviewImportService {
 		return String.join("；", kept);
 	}
 
+	/** 读取隐藏元数据前 8 行的文件格式、报价身份、模板版本及可见工作表信息。 */
 	private static Map<String, String> properties(Sheet metadata, FormulaEvaluator evaluator) {
 		Map<String, String> values = new LinkedHashMap<>();
 		for (int i = 0; i < 8; i++) {
@@ -183,6 +197,7 @@ final class QuoteReviewImportService {
 		return values;
 	}
 
+	/** 读取导出时保存的 11 项基准值，用于判断 Excel 中哪些字段被修改。 */
 	private static Map<String, Object> baseline(Row row, FormulaEvaluator evaluator) {
 		Map<String, Object> value = obj();
 		for (int i = 0; i < FIELDS.size(); i++)
@@ -190,6 +205,10 @@ final class QuoteReviewImportService {
 		return value;
 	}
 
+	/**
+	 * 按 10、12 或 13 列校对模板读取产品字段。
+	 * 无安装模板没有安装金额；旧版 12 列与新版含本行总金额的 13 列均采用各自固定列位。
+	 */
 	private static Map<String, Object> visible(Row row, FormulaEvaluator evaluator, int columns) {
 		Map<String, Object> value = obj("name", cellText(row.getCell(1), evaluator), "thickness",
 				cellText(row.getCell(2), evaluator), "spec", cellText(row.getCell(3), evaluator), "process",
@@ -208,6 +227,7 @@ final class QuoteReviewImportService {
 		return value;
 	}
 
+	/** 读取合并的设备运费汇总金额单元格，并保留基准中的名称和行身份；该汇总不是普通产品行。 */
 	private static Map<String, Object> visibleEquipmentFreight(Row row, FormulaEvaluator evaluator, int columns,
 			Map<String, Object> baseline) {
 		Map<String, Object> value = new LinkedHashMap<>(baseline);
@@ -221,6 +241,7 @@ final class QuoteReviewImportService {
 		return value;
 	}
 
+	/** 统一数量与金额的小数表示，去掉无意义尾零，避免“2”和“2.0”被误报为人工修改。 */
 	private static void normalizeNumbers(Map<String, Object> line, int row) {
 		for (String key : List.of("quantity", "material_unit", "material_amount", "installation_amount",
 				"line_total")) {
@@ -230,6 +251,10 @@ final class QuoteReviewImportService {
 		}
 	}
 
+	/**
+	 * 判断原本需要报价的行是否已补齐：数量须为正，含安装时安装金额须明确填写。
+	 * 材料单价/金额可补算一个缺项，本行总额由材料与安装金额重算；空白安装仍待确认，明确 0 有效。
+	 */
 	private static boolean complete(Map<String, Object> line, int row, boolean required, boolean installation,
 			Set<String> derivedFields) {
 		if (!required)
@@ -252,6 +277,10 @@ final class QuoteReviewImportService {
 		return true;
 	}
 
+	/**
+	 * 材料单价或材料金额只填一个时按数量补算另一个，并标记为派生修改。
+	 * 两项均已填写时保留人工值；从金额反算单价保留 8 位小数，避免除法造成无限循环小数。
+	 */
 	private static void completePair(Map<String, Object> line, String unitKey, String amountKey, BigDecimal quantity,
 			int row, Set<String> derivedFields) {
 		String unit = s(line, unitKey), total = s(line, amountKey);
@@ -267,10 +296,12 @@ final class QuoteReviewImportService {
 		}
 	}
 
+	/** 汇总时把空金额当作 0；是否允许空值参与最终报价由 complete 的待确认校验决定。 */
 	private static BigDecimal amount(Object value) {
 		return blank(value) ? ZERO : decimal(str(value), "金额");
 	}
 
+	/** 解析含千分位、人民币符号及空白的人工数字，仅允许 0 至 1 万亿元范围。 */
 	private static BigDecimal decimal(String value, String label) {
 		String clean = value.trim().replace(",", "").replace("，", "").replace("¥", "").replace("￥", "")
 			.replaceAll("\\s+", "");
@@ -285,6 +316,7 @@ final class QuoteReviewImportService {
 		}
 	}
 
+	/** 严格解析元数据整数，拒绝非整数修订号、列数或行号。 */
 	private static int integer(String value, String label) {
 		try {
 			return new BigDecimal(value).intValueExact();
@@ -294,11 +326,16 @@ final class QuoteReviewImportService {
 		}
 	}
 
+	/** 读取导出时的待确认状态，兼容布尔文字、数字 1 和中文“是”。 */
 	private static boolean booleanValue(Cell cell, FormulaEvaluator evaluator) {
 		String value = cellText(cell, evaluator);
 		return value.equalsIgnoreCase("true") || value.equals("1") || value.equals("是");
 	}
 
+	/**
+	 * 读取单元格值并求取校对文件的公式结果，数字转为业务小数字符串。
+	 * 本流程允许报价员在校对版用公式完善金额；无法读取的公式结果阻断回导。
+	 */
 	private static String cellText(Cell cell, FormulaEvaluator evaluator) {
 		if (cell == null)
 			return "";

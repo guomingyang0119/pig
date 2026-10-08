@@ -12,22 +12,29 @@ import java.util.*;
 import java.util.regex.*;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 
-/** Fills the approved customer template; internal price/rule snapshots never enter it. */
+/**
+ * 根据已保存的报价内容及计算结果生成正式报价或可编辑校对版 Excel。
+ * 正式文件仅保留对客供货内容和对应模板；校对版另外保存计算明细与回导基准，以支持人工完善后核对差异。
+ */
 public final class DuctExportService {
 
-	public static final String TEMPLATE_VERSION = "review-roundtrip-20261006-v11";
+	// 导出版式或回导列语义变化时更新；模板指纹和校对元数据均引用此版本。
+	public static final String TEMPLATE_VERSION = "review-roundtrip-20261007-v12";
 
 	static final String REVIEW_METADATA_SHEET = "_系统回导";
 
+	// 系统校对文件格式标记，用于区分可回导文件与普通客户清单。
 	static final String REVIEW_METADATA_MAGIC = "PIG_QUOTE_REVIEW_V1";
 
 	private static final byte[] PENDING_FILL_RGB = { (byte) 0xF4, (byte) 0xCC, (byte) 0xCC };
 
+	/** 为待确认产品或汇总项设置统一红色底纹，便于报价员识别仍需完善的内容。 */
 	static void pendingFill(CellStyle style) {
 		((XSSFCellStyle) style).setFillForegroundColor(new XSSFColor(PENDING_FILL_RGB, null));
 		style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 	}
 
+	/** 读取随报价模块打包的固定模板、Logo 或基础指标资源；缺失时阻断文件生成。 */
 	public static byte[] asset(String name) {
 		try (InputStream in = DuctExportService.class.getResourceAsStream("/quotation/" + name)) {
 			if (in == null)
@@ -39,6 +46,7 @@ public final class DuctExportService {
 		}
 	}
 
+	/** 对模板文件和导出格式版本一起计算指纹，让报价服务识别模板变化并要求重新试算。 */
 	public static String templateHash() {
 		try {
 			MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -51,6 +59,7 @@ public final class DuctExportService {
 		}
 	}
 
+	/** 取得模板单元格，缺少行或列时创建，用于安全填充动态明细区。 */
 	private static Cell cell(Sheet sheet, int row, int col) {
 		Row r = sheet.getRow(row);
 		if (r == null)
@@ -59,6 +68,7 @@ public final class DuctExportService {
 		return c == null ? r.createCell(col) : c;
 	}
 
+	/** 把客户名称、项目和备注写成普通文本，先清空模板原公式，防止客户文字被当成计算式。 */
 	private static void literal(Sheet sheet, String coordinate, Object value) {
 		CellReference ref = new CellReference(coordinate);
 		Cell cell = cell(sheet, ref.getRow(), ref.getCol());
@@ -68,19 +78,33 @@ public final class DuctExportService {
 			cell.setCellValue(text);
 	}
 
+	/**
+	 * 先去掉模板原公式，再写入已经算好的数值；金额为空时保持空白。
+	 * double 只用于 Excel 序列化，业务价格计算继续使用 BigDecimal。
+	 */
 	private static void number(Cell cell, Object value) {
-		// POI setCellValue alone updates a formula's cached value but leaves the formula
-		// alive.
+		// 对公式单元格仅调用 POI setCellValue 会更新缓存值，
+		// 仍会保留原公式，所以必须先清空单元格。
 		cell.setBlank();
 		if (value == null || blank(value))
 			cell.setBlank();
 		else
-			cell.setCellValue(n(value).doubleValue()); // Excel numeric serialization
-														// only; all calculations are
-														// BigDecimal.
+			cell.setCellValue(n(value).doubleValue()); // 转为 Excel 数值保存时使用 double，
+														// 业务计算全程仍使用
+														// BigDecimal 十进制数。
 	}
 
-	/** 正式含安装模板增加本行总金额列，并把原备注列及跨列版式向右扩展一列。 */
+	/** 校对版的异常数量保留原文以便更正；价格仍为空，不把错误数量变成 0。 */
+	private static void reviewQuantity(Cell cell, Object value) {
+		try {
+			number(cell, value);
+		}
+		catch (RuleException e) {
+			cell.setCellValue(str(value));
+		}
+	}
+
+	/** 把带安装模板扩展为 13 列：增加本行总金额，向右移动备注并同步汇总合并区域。 */
 	static void expandFormalInstallationSheet(XSSFSheet sheet) {
 		int totalColumn = 11, remarkColumn = 12;
 		sheet.setColumnWidth(remarkColumn, sheet.getColumnWidth(totalColumn));
@@ -110,6 +134,7 @@ public final class DuctExportService {
 		literal(sheet, "M9", "备注");
 	}
 
+	/** 清除模板中的旧图片锚点，按固定尺寸嵌入公司 Logo，避免重复图片影响正式版式。 */
 	static void addLogo(XSSFWorkbook wb, XSSFSheet sheet) {
 		XSSFDrawing drawing = sheet.createDrawingPatriarch();
 		drawing.getCTDrawing()
@@ -135,14 +160,21 @@ public final class DuctExportService {
 		drawing.createPicture(anchor, logo);
 	}
 
+	/** 导出报价文件的简化入口；无需绑定上下文时委托完整入口处理。 */
 	public byte[] write(Map<String, Object> body, Map<String, Object> result, String identifier, boolean formal) {
 		return write(body, result, identifier, formal, obj());
 	}
 
+	/**
+	 * 正式导出要求 formal_ready，校对版允许带待确认项继续人工完善。
+	 * 回导身份由 context 提供；模板读取和填充失败统一转为报价业务错误。
+	 */
 	public byte[] write(Map<String, Object> body, Map<String, Object> result, String identifier, boolean formal,
 			Map<String, Object> context) {
 		if (formal && !yes(result.get("formal_ready")))
 			throw new RuleException("正式报价条件未满足");
+		// 旧草稿也在导出时整理展示字段；不改保存的清单、原文证据或计算金额。
+		body = displayBody(body);
 		try {
 			return formal ? formal(body, result, identifier) : review(body, result, identifier, context);
 		}
@@ -154,6 +186,58 @@ public final class DuctExportService {
 		}
 	}
 
+	/** 只复制供展示的产品行，让项目特征拆列同时覆盖历史草稿。 */
+	private static Map<String, Object> displayBody(Map<String, Object> body) {
+		var display = new LinkedHashMap<>(body);
+		display.put("rows", list(body.get("rows")).stream().map(row -> {
+			Map<String, Object> copy = map(displayCopy(row));
+			if (!(copy.get("attributes") instanceof Map<?, ?>)) {
+				Map<String, Object> attributes = new LinkedHashMap<>();
+				for (String key : DuctImportService.ATTRIBUTES)
+					if (!blank(copy.get(key))) attributes.put(key, copy.get(key));
+				copy.put("attributes", attributes);
+			}
+			QuoteRowFields.normalize(copy);
+			return copy;
+		}).toList());
+		return display;
+	}
+
+	/** 递归复制扩展参数和原文，避免整理显示时写入已保存对象。 */
+	private static Object displayCopy(Object value) {
+		if (value instanceof Map<?, ?> values) {
+			Map<String, Object> copy = new LinkedHashMap<>();
+			values.forEach((key, item) -> copy.put(str(key), displayCopy(item)));
+			return copy;
+		}
+		if (value instanceof List<?> values)
+			return values.stream().map(DuctExportService::displayCopy).toList();
+		return value;
+	}
+
+	/** 法兰栏使用中文，未明确法兰时继续展示原有供货/待确认工艺。 */
+	private static String displayFlange(Object flange, String fallback) {
+		return Map.of("common", "共板法兰", "angle", "角钢法兰", "round", "圆法兰")
+			.getOrDefault(str(flange), str(flange).contains("法兰") ? str(flange) : fallback);
+	}
+
+	/** 人工校对的旧明细同样拆列，明确的价格和数量保持原值。 */
+	private static Map<String, Object> displayManualLine(Map<String, Object> line) {
+		Map<String, Object> copy = map(displayCopy(line));
+		var attributes = new LinkedHashMap<>(map(copy.get("attributes")));
+		if (!blank(copy.get("thickness")) && !s(copy, "thickness").equals("-"))
+			attributes.putIfAbsent("thickness", copy.get("thickness"));
+		if (Set.of("common", "angle", "round").contains(s(copy, "process")))
+			attributes.putIfAbsent("flange", copy.get("process"));
+		copy.put("attributes", attributes);
+		QuoteRowFields.normalize(copy);
+		if (!blank(attr(copy, "thickness")))
+			copy.put("thickness", attr(copy, "thickness"));
+		copy.put("process", displayFlange(attr(copy, "flange"), s(copy, "process")));
+		return copy;
+	}
+
+	/** 保留旧式风管草稿表的生成实现，按计算状态展示产品、附项及安装原因；当前 write 入口使用统一校对模板。 */
 	private byte[] draft(Map<String, Object> body, Map<String, Object> result, String identifier) throws IOException {
 		try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
 			Sheet sheet = wb.createSheet("报价草稿");
@@ -221,15 +305,21 @@ public final class DuctExportService {
 		}
 	}
 
+	/** 判断设备或混合计价模式，用于选择供货口径和客户规格展示。 */
 	private static boolean equipmentMode(Map<String, Object> body) {
 		return Set.of("equipment_v1", "mixed_v1").contains(s(body, "pricing_mode"));
 	}
 
+	/** 生成整单是否安装及安装含税口径的对客说明。 */
 	private static String installationScope(Map<String, Object> body) {
 		return InstallationPricingEngine.enabled(body)
 				? "含安装（安装" + (InstallationPricingEngine.taxIncluded(body) ? "含税" : "不含税") + "）" : "不含安装";
 	}
 
+	/**
+	 * 优先展示实际选型风机的型号、功率和工况，并列出核实后的附阀规格及每台数量。
+	 * 普通设备保持客户原规格，缺少文本时才由已解析尺寸和型号拼出展示值。
+	 */
 	static String equipmentSpecification(Map<String, Object> row, Map<String, Object> result) {
 		var point = map(map(result.get("detail")).get("selected_fan"));
 		if (!point.isEmpty()) {
@@ -261,6 +351,7 @@ public final class DuctExportService {
 		return value;
 	}
 
+	/** 根据整单税费、运费和安装条件生成供货范围文字，兼容旧草稿的分模式条件。 */
 	private static String quotationScope(Map<String, Object> body) {
 		if (bool(body.get("include_freight"))) {
 			var options = map(body.get(equipmentMode(body) ? "equipment_options" : "duct_options"));
@@ -282,6 +373,7 @@ public final class DuctExportService {
 				+ installationScope(body);
 	}
 
+	/** 保留旧式设备草稿表的生成实现，输出选型规格、待确认原因和安装附项；当前 write 入口使用统一校对模板。 */
 	private byte[] equipmentDraft(Map<String, Object> body, Map<String, Object> result, String identifier)
 			throws IOException {
 		try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
@@ -359,6 +451,7 @@ public final class DuctExportService {
 		}
 	}
 
+	/** 生成风管对客规格，优先明确型号，其次矩形尺寸或圆管直径，剥离已在厚度列展示的重复板厚文本。 */
 	static String specification(Map<String, Object> row) {
 		if (!blank(attr(row, "model")))
 			return str(attr(row, "model"));
@@ -378,19 +471,25 @@ public final class DuctExportService {
 			.replaceAll("^[ /／,，;；|｜]+|[ /／,，;；|｜]+$", "");
 	}
 
+	/** 生成仅包含已计价内容的导出行，待确认行由支持校对模式的重载处理。 */
 	private List<Map<String, Object>> lines(Map<String, Object> body, Map<String, Object> result,
 			boolean installation) {
 		return lines(body, result, installation, false);
 	}
 
+	/**
+	 * 构造对客材料、法兰、辅材和安装明细，按需要保留待确认行。
+	 * 人工回导后的明细优先使用人工金额；系统行沿用计算结果，材料已确认但安装待确认时保留材料金额。
+	 */
 	private List<Map<String, Object>> lines(Map<String, Object> body, Map<String, Object> result,
 			boolean installation, boolean includePending) {
 		List<Map<String, Object>> manual = list(result.get("manual_lines"));
+		// 人工改价已经确认的明细优先导出，避免用旧试算结果重新覆盖报价员核实金额。
 		if (!manual.isEmpty()) {
 			List<Map<String, Object>> exported = calculationMetadata(body, result, manual.stream()
 				.filter(line -> includePending || !yes(line.get("pending")))
 				.map(line -> {
-					Map<String, Object> copy = new LinkedHashMap<>(line);
+					Map<String, Object> copy = displayManualLine(line);
 					copy.put("remark", stripReviewLogic(s(copy, "remark")));
 					if (installation)
 						copy.put("installation_unit", installationUnit(copy.get("installation_amount"), copy.get("quantity")));
@@ -415,6 +514,7 @@ public final class DuctExportService {
 		Map<String, String> flanges = Map.of("common", "共板法兰", "angle", "角钢法兰", "round", "圆法兰");
 		for (int i = 0; i < sources.size(); i++) {
 			Map<String, Object> source = sources.get(i), r = rows.get(i);
+			// 校对版保留待确认产品及原因，正式版只输出已计价内容；不计价行不产生价格。
 			if (!s(r, "status").equals("priced")) {
 				if (includePending && s(r, "status").equals("pending")) {
 					String remark = "待确认：" + s(r, "reason");
@@ -424,7 +524,7 @@ public final class DuctExportService {
 							: source.get("quantity");
 					String thickness = blank(attr(source, "thickness")) ? "-" : str(attr(source, "thickness"));
 					var line = obj("name", source.get("name"), "thickness", thickness, "spec",
-							 equipmentSpecification(source, r), "process", "待确认", "unit", source.get("unit"), "quantity",
+							 equipmentSpecification(source, r), "process", displayFlange(attr(source, "flange"), "待确认"), "unit", source.get("unit"), "quantity",
 							 quantity, "material_unit", null, "material_amount", null, "installation_amount", null,
 							 "line_total", null, "remark", remark, "pending", true, "source_row_id", source.get("row_id"));
 					applyInstallation(line, installationRows.get(i), installation);
@@ -438,15 +538,20 @@ public final class DuctExportService {
 				String sourceRemark = s(source, "remark");
 				String remark;
 				if (s(r, "equipment_kind").equals("fan")) {
-					String selectedModel = s(map(detail.get("selected_fan")), "model");
+					var selectedFan = map(detail.get("selected_fan"));
+					String selectedModel = s(selectedFan, "model");
 					String modelRemark = selectedModel.isEmpty() ? note : "选择型号：" + selectedModel;
 					remark = modelRemark + (sourceRemark.isEmpty() ? "" : (modelRemark.isEmpty() ? "" : "；") + sourceRemark);
+					String requestedSpec = s(source, "spec");
+					if (!selectedFan.isEmpty() && !requestedSpec.isBlank()
+							&& !equipmentSpecification(source, r).contains(requestedSpec) && !remark.contains(requestedSpec))
+						remark += (remark.isEmpty() ? "" : "；") + "客户要求规格：" + requestedSpec;
 				}
 				else {
 					remark = sourceRemark + (note.isEmpty() ? "" : (!sourceRemark.isEmpty() ? "；" : "") + note);
 				}
-				var line = obj("name", source.get("name"), "thickness", "-", "spec", equipmentSpecification(source, r),
-						"process", "设备供货", "unit", r.getOrDefault("billing_unit", source.get("unit")), "quantity",
+				var line = obj("name", source.get("name"), "thickness", blank(attr(source, "thickness")) ? "-" : attr(source, "thickness"), "spec", equipmentSpecification(source, r),
+						"process", displayFlange(attr(source, "flange"), "设备供货"), "unit", r.getOrDefault("billing_unit", source.get("unit")), "quantity",
 						r.get("billing_quantity"), "material_unit", r.get("unit_price"), "material_amount",
 						r.get("amount"), "remark", remark, "source_row_id", source.get("row_id"));
 				applyInstallation(line, installationRows.get(i), installation);
@@ -476,6 +581,7 @@ public final class DuctExportService {
 					r.get("body_amount"), "remark", remark, "source_row_id", source.get("row_id"));
 			applyInstallation(main, installationRows.get(i), installation);
 			lines.add(main);
+			// 按实际米数或个数另列的法兰单独导出，不能再合入面积单价重复计费。
 			if (r.get("flange_amount") != null)
 				lines.add(materialOnly(obj("name", "角钢法兰", "thickness", "-", "spec", map(r.get("selected_flange")).get("name"),
 						"process", "角钢法兰", "unit", "米", "quantity", r.get("flange_meters"), "material_unit",
@@ -507,6 +613,7 @@ public final class DuctExportService {
 		return lines;
 	}
 
+	/** 仅向校对版备注补充实际计价类别和选型信息，便于人工核对；反复导出先移除旧说明避免重复。 */
 	private static void appendReviewPricingLogic(Map<String, Object> body, Map<String, Object> result,
 			List<Map<String, Object>> lines) {
 		List<Map<String, Object>> sources = list(body.get("rows")), calculated = list(result.get("rows"));
@@ -531,6 +638,7 @@ public final class DuctExportService {
 		}
 	}
 
+	/** 把导出行对应的设备、风管或附项计算分支转为可读说明，待确认行展示当前识别依据。 */
 	private static String reviewPricingLogic(Map<String, Object> line, Map<String, Object> source,
 			Map<String, Object> row) {
 		String calculationKind = s(line, "_calculation_kind"), process = s(line, "process");
@@ -573,6 +681,7 @@ public final class DuctExportService {
 		return "";
 	}
 
+	/** 生成设备计价分支中文名称，风口实际类型与备注指定的计价口径分别展示。 */
 	private static String equipmentLogicLabel(String kind, Map<String, Object> row) {
 		if (kind.equals("louver")) {
 			String type = s(map(row.get("detail")), "louver_type");
@@ -596,12 +705,14 @@ public final class DuctExportService {
 			.getOrDefault(kind, kind);
 	}
 
+	/** 去除上次校对文件自动加入的内部识别/计价说明，保留普通客户备注。 */
 	private static String stripReviewLogic(String remark) {
 		return Arrays.stream(remark.split("\\R", -1))
 			.filter(line -> !line.trim().startsWith("系统计价逻辑：") && !line.trim().startsWith("系统识别类型："))
 			.collect(java.util.stream.Collectors.joining("\n")).strip();
 	}
 
+	/** 为人工回导明细恢复对应源行和附项计算标识，使再次导出校对明细仍能找到原计算依据。 */
 	private static List<Map<String, Object>> calculationMetadata(Map<String, Object> body,
 			Map<String, Object> result, List<Map<String, Object>> manualLines) {
 		Map<String, Integer> sourceIndexes = new HashMap<>();
@@ -639,6 +750,7 @@ public final class DuctExportService {
 		return manualLines;
 	}
 
+	/** 正式导出已解决的人工校对行时清理待确认提示，保留正常供货备注。 */
 	private static String resolvedRemark(String remark) {
 		List<String> kept = new ArrayList<>();
 		for (String part : remark.split("；")) {
@@ -650,6 +762,7 @@ public final class DuctExportService {
 		return String.join("；", kept);
 	}
 
+	/** 给单独计价的法兰或辅材填入明确的 0 安装费，含安装模板的本行总额等于材料金额。 */
 	private static Map<String, Object> materialOnly(Map<String, Object> line, boolean installation) {
 		if (installation) {
 			line.put("installation_unit", "0");
@@ -659,6 +772,10 @@ public final class DuctExportService {
 		return line;
 	}
 
+	/**
+	 * 把同一产品的安装结果附到材料行，计算本行材料与安装合计。
+	 * 缺少或待确认安装仍标为 pending，但不抹掉已经确认的材料单价和金额。
+	 */
 	private static void applyInstallation(Map<String, Object> target, Map<String, Object> installation,
 			boolean included) {
 		if (!included)
@@ -683,6 +800,7 @@ public final class DuctExportService {
 		}
 	}
 
+	/** 将不依附产品行的安装项目和现场附加费单独列出，沿用安装引擎的税费及逐项取整结果。 */
 	private static List<Map<String, Object>> independentInstallationLines(Map<String, Object> result, boolean included) {
 		List<Map<String, Object>> lines = new ArrayList<>();
 		var installation = map(map(result.get("fees")).get("installation"));
@@ -715,6 +833,7 @@ public final class DuctExportService {
 		return lines;
 	}
 
+	/** 仅为模板展示从安装总额反算单位金额；数量缺失或为 0 时保持空白。 */
 	private static Object installationUnit(Object amount, Object quantity) {
 		if (blank(amount) || blank(quantity))
 			return null;
@@ -722,6 +841,10 @@ public final class DuctExportService {
 		return qty.signum() == 0 ? null : text(n(amount).divide(qty, MC));
 	}
 
+	/**
+	 * 仅在设备运费需整单另列时增加汇总行。
+	 * 自动运费已包含设备单价时不再新增；人工整单运费待确认可在校对版继续填写。
+	 */
 	private static void appendEquipmentFreightLine(List<Map<String, Object>> lines, Map<String, Object> result,
 			boolean installation, boolean includePending) {
 		if (lines.stream().anyMatch(line -> s(line, "process").equals("设备运费")))
@@ -745,6 +868,7 @@ public final class DuctExportService {
 		lines.add(line);
 	}
 
+	/** 为旧风管条件生成含税、运费和安装范围说明。 */
 	private static String scope(Map<String, Object> options) {
 		return (yes(options.get("tax_included")) ? "含税" : "不含税") + "；"
 				+ (yes(options.get("include_freight")) ? "含运费" : "不含运费") + "；"
@@ -752,6 +876,7 @@ public final class DuctExportService {
 						? "含安装（安装" + (yes(options.get("tax_included")) ? "含税" : "不含税") + "）" : "不含安装");
 	}
 
+	/** 生成对客供货、付款和安装排除范围说明，明确明细为付款前价格、整单付款系数统一乘一次。 */
 	private List<String> notes(Map<String, Object> body, Map<String, Object> result) {
 		if (equipmentMode(body)) {
 			List<String> notes = new ArrayList<>(List.of("报价范围：" + quotationScope(body) + "。"));
@@ -784,20 +909,27 @@ public final class DuctExportService {
 		return notes;
 	}
 
+	/** 使用客户模板输出已满足正式条件的报价，不附加内部计算和回导工作表。 */
 	private byte[] formal(Map<String, Object> body, Map<String, Object> result, String identifier) throws IOException {
 		return customerTemplate(body, result, identifier, false);
 	}
 
+	/** 使用客户模板输出可编辑校对版，并带上报价身份以支持人工完善后的差异回导。 */
 	private byte[] review(Map<String, Object> body, Map<String, Object> result, String identifier,
 			Map<String, Object> context) throws IOException {
 		return customerTemplate(body, result, identifier, true, context);
 	}
 
+	/** 委托完整客户模板生成器，未提供上下文时使用空身份信息。 */
 	private byte[] customerTemplate(Map<String, Object> body, Map<String, Object> result, String identifier,
 			boolean review) throws IOException {
 		return customerTemplate(body, result, identifier, review, obj());
 	}
 
+	/**
+	 * 按是否安装选择单层材料或带安装模板，动态扩展明细和页脚并填写现有计算结果。
+	 * 正式版只留对客页；校对版对未完成材料或安装分别留空小计，并增加计算明细和隐藏回导基准。
+	 */
 	private byte[] customerTemplate(Map<String, Object> body, Map<String, Object> result, String identifier,
 			boolean review, Map<String, Object> context) throws IOException {
 		boolean installation = InstallationPricingEngine.enabled(body);
@@ -893,7 +1025,8 @@ public final class DuctExportService {
 						if (Set
 							.of("quantity", "material_unit", "material_amount", "installation_unit", "installation_amount", "line_total")
 							.contains(key))
-							number(cell, line.get(key));
+							if (review && key.equals("quantity") && yes(line.get("pending"))) reviewQuantity(cell, line.get(key));
+							else number(cell, line.get(key));
 						else {
 							String text = str(line.get(key));
 							if (!text.isEmpty())
@@ -918,6 +1051,7 @@ public final class DuctExportService {
 			for (String coord : installation ? List.of("H3", "I3") : List.of("G3", "H3"))
 				literal(sheet, coord, "");
 			int end = 8 + detailLines.size(), summaryRow = end + 1;
+			// 材料和安装各自检查完整性，只对尚未确认的部分隐藏小计；总额在整单全部确认后展示。
 			boolean materialPending = detailLines.stream().anyMatch(line -> !Set.of("安装", "整单汇总")
 					.contains(s(line, "process")) && (blank(line.get("material_unit")) || blank(line.get("material_amount"))));
 			var installationFee = map(map(result.get("fees")).get("installation"));
@@ -974,6 +1108,7 @@ public final class DuctExportService {
 			sheet.getPrintSetup().setFitWidth((short) 1);
 			sheet.getPrintSetup().setFitHeight((short) (lines.size() <= 12 ? 1 : 0));
 			wb.setPrintArea(0, 0, columns - 1, 0, uppercase + 6);
+			// 计算明细和隐藏差异基准只属于内部可编辑校对文件，正式客户报价保留单张供货表。
 			if (review) {
 				QuoteCalculationDetails.addSheet(wb, body, result, lines, installation);
 				reviewMetadata(wb, lines, context, installation);
@@ -983,6 +1118,7 @@ public final class DuctExportService {
 		}
 	}
 
+	/** 将另列设备运费排成汇总行，复用相邻汇总样式并重新设置合并范围。 */
 	private static void prepareEquipmentFreightSummaryRow(XSSFSheet sheet, int row, int styleRow, int columns,
 			int amountColumn) {
 		CellStyle label = cell(sheet, styleRow, 0).getCellStyle(), amount = cell(sheet, styleRow, amountColumn).getCellStyle();
@@ -1001,6 +1137,7 @@ public final class DuctExportService {
 		sheet.getRow(row).setHeightInPoints(34);
 	}
 
+	/** 保留汇总单元格版式并标红待确认运费，提醒报价员完善金额。 */
 	private static void markPendingSummaryRow(XSSFWorkbook wb, XSSFSheet sheet, int row, int columns) {
 		for (int c = 0; c < columns; c++) {
 			Cell target = cell(sheet, row, c);
@@ -1011,6 +1148,10 @@ public final class DuctExportService {
 		}
 	}
 
+	/**
+	 * 保存报价 ID、修订号、模板版本、可见行号及导出时字段基准到不可直接显示的工作表。
+	 * 人工回导用这些数据校验归属和识别变化，正式对客文件不创建该工作表。
+	 */
 	private static void reviewMetadata(XSSFWorkbook wb, List<Map<String, Object>> lines,
 			Map<String, Object> context, boolean installation) {
 		XSSFSheet metadata = wb.createSheet(REVIEW_METADATA_SHEET);
@@ -1046,6 +1187,7 @@ public final class DuctExportService {
 		wb.setSheetVisibility(wb.getSheetIndex(metadata), SheetVisibility.VERY_HIDDEN);
 	}
 
+	/** 把已确认总额转为人民币中文大写，处理跨万/亿分组和角分，禁止负数正式总额。 */
 	static String upperMoney(BigDecimal value) {
 		if (value.signum() < 0)
 			throw new RuleException("正式报价总额不能为负数");

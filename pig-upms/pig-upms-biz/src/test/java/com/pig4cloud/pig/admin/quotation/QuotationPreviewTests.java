@@ -17,19 +17,22 @@ import java.util.concurrent.*;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 
 /**
- * Opt-in loopback-only browser verification with real Java services and temporary H2
- * data. Never packaged in the application. This adapter does NOT test pig
- * login/gateway/security filters.
+ * 显式开启的本机浏览器验收入口，使用真实Java报价服务和临时H2数据。
+ * 仅绑定回环地址，供报价页面流程验收，不打包到生产应用；登录、网关和安全过滤器需另行验证。
  */
 @EnabledIfSystemProperty(named = "quotation.preview", matches = "true")
 class QuotationPreviewTests {
 
+	/**
+	 * 初始化临时报价业务表，并将页面请求适配到实际服务方法和事务。
+	 * 仅在quotation.preview=true时运行，通过停止接口或45分钟超时结束本机验收。
+	 */
 	@Test
 	void serveTemporaryPreview() throws Exception {
 		var source = new DriverManagerDataSource("jdbc:h2:mem:quotation_preview;MODE=MySQL;DATABASE_TO_LOWER=TRUE",
 				"sa", "");
 		var jdbc = new JdbcTemplate(source);
-		// Keep the in-memory database alive for this test only.
+		// 在验收期间持有连接以保留临时内存库；结束后关闭验收服务。
 		try (var keeper = source.getConnection()) {
 			String sql = Files.readString(Path.of("..", "..", "db", "quotation.sql")).split("-- 菜单使用")[0]
 				.replaceAll("(?m)^--.*$", "");
@@ -59,6 +62,7 @@ class QuotationPreviewTests {
 					byte[] raw = exchange.getRequestBody().readNBytes(DuctImportService.MAX_BYTES + 1);
 					Map<String, Object> data = relative.equals("imports") || raw.length == 0 ? obj()
 							: json.readValue(raw, Map.class);
+					// 每个模拟HTTP请求均在独立事务内执行，保留业务行锁和多次请求的修订校验。
 					Object response = tx.execute(status -> {
 						String id = parts.length > 1 ? parts[1] : "", action = parts.length > 2 ? parts[2] : "";
 						return switch (parts[0]) {

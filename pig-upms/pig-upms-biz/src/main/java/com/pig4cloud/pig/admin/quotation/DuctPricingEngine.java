@@ -15,17 +15,22 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
  */
 public final class DuctPricingEngine {
 
+	// 引擎规则版本随计算行为变化递增，历史报价可据此识别是否需要重新试算。
 	public static final String VERSION = "duct-v16";
 
+	// 含安装报价沿用的施工范围说明，会随计算结果进入页面或导出备注。
 	public static final List<String> INSTALLATION_NOTES = List.of("不含风机控制箱及控制箱到风机的电线、电器。", "不含风机基础预制的制作；不含抗震支架。",
 			"不含设备及管道预留洞孔的开启与修复。");
 
+	// 直管、异形件和半成品不区分分别匹配不同加工费。
 	private static final Set<String> SHAPES = Set.of("straight", "irregular", "semi_unspecified");
 
+	// 名称与规格用于风管材料和结构识别；成品状态另会参考备注和原始文字。
 	private static String description(Map<String, Object> row) {
 		return s(row, "name") + " " + s(row, "spec");
 	}
 
+	// 把中文参数选项转换为内部代号，已是内部代号的值保持原样。
 	private static String alias(Object value, Map<String, String> aliases) {
 		return aliases.getOrDefault(str(value), str(value));
 	}
@@ -34,10 +39,12 @@ public final class DuctPricingEngine {
 		return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(text);
 	}
 
+	// 使用指标中的指定公式计算价格，所有变量来自已确认费率和当前风管参数。
 	private static BigDecimal eval(Map<String, Object> expressions, String key, Map<String, Object> env) {
 		return DecimalFormula.evaluate(s(expressions, key), env);
 	}
 
+	// 复制费率或付款配置再补充行变量，避免计算一行时修改共享指标。
 	private static Map<String, Object> env(Map<String, Object> source, Object... pairs) {
 		Map<String, Object> e = new LinkedHashMap<>(source);
 		e.putAll(obj(pairs));
@@ -105,6 +112,10 @@ public final class DuctPricingEngine {
 		return SHAPES.contains(selected) ? selected : "semi_unspecified";
 	}
 
+	/**
+	 * 依次读取行属性、名称/规格和整单法兰设置；混合法兰要求逐行明确，不能直接套一个默认形式。
+	 *
+	 */
 	static String flange(Map<String, Object> row, Map<String, Object> options) {
 		String value = alias(attr(row, "flange"), Map.of("共板法兰", "common", "共板", "common", "角钢法兰", "angle", "角钢",
 				"angle", "角铁法兰", "angle", "角铁", "angle", "圆法兰", "round", "圆形法兰", "round"));
@@ -119,6 +130,11 @@ public final class DuctPricingEngine {
 		return value;
 	}
 
+	/**
+	 * 确认半成品或成品，先读行属性，再读名称、规格、备注及原始文字，最后读整单默认值。
+	 * 成品状态决定是否增加合口费，安装引擎还会据此要求确认成品安装单价。
+	 *
+	 */
 	static String state(Map<String, Object> row, Map<String, Object> options) {
 		String value = alias(attr(row, "product_state"), Map.of("半成品", "semi", "成品", "finished"));
 		String desc = description(row) + " " + s(row, "remark") + " " + s(row, "source_text");
@@ -129,6 +145,7 @@ public final class DuctPricingEngine {
 		return value;
 	}
 
+	// 读取矩形宽高，单位 mm；尺寸用于窄管附加加工费和角钢规格判断，不用于重新推算总工程量。
 	private static BigDecimal[] dimensions(Map<String, Object> row) {
 		if (!blank(attr(row, "width")) && !blank(attr(row, "height")))
 			return new BigDecimal[] { positive(attr(row, "width"), "宽"), positive(attr(row, "height"), "高") };
@@ -137,6 +154,7 @@ public final class DuctPricingEngine {
 		return m.find() ? new BigDecimal[] { n(m.group(1)), n(m.group(2)) } : null;
 	}
 
+	// 热镀锌角钢需显式属性或文字依据，其余情况按黑角钢查价。
 	private static String flangeMaterial(Map<String, Object> row) {
 		String explicit = alias(attr(row, "flange_material"),
 				Map.of("黑角铁", "black", "黑角钢", "black", "热镀锌角铁", "hot_galvanized", "热镀锌角钢", "hot_galvanized"));
@@ -145,6 +163,11 @@ public final class DuctPricingEngine {
 		return description(row).contains("热镀锌角") ? "hot_galvanized" : "black";
 	}
 
+	/**
+	 * 人工或文字明确的 30/40/50 规格优先；默认按最大边及板厚判断。
+	 * 最大边 ≥1600mm 用 40，0.5～1.2mm 用 30，1.5/2mm 用 40；其他板厚需确认。
+	 *
+	 */
 	private static int flangeSize(Map<String, Object> row, BigDecimal thickness) {
 		if (!blank(attr(row, "flange_size"))) {
 			String value = str(attr(row, "flange_size")).replace("角钢", "").trim();
@@ -165,6 +188,11 @@ public final class DuctPricingEngine {
 		throw new RuleException("待确认：此厚度没有默认角钢规格");
 	}
 
+	/**
+	 * 读取角钢计算档位，兼容旧 flange_weight 字段；30 和 40 分别默认 7.5、12.5，50 必须人工明确。
+	 * 档位进入指标公式，不能直接当作法兰每米价格。
+	 *
+	 */
 	private static BigDecimal grade(Map<String, Object> row, int size) {
 		Object explicit = blank(attr(row, "flange_grade")) ? attr(row, "flange_weight") : attr(row, "flange_grade");
 		if (!blank(explicit))
@@ -179,6 +207,7 @@ public final class DuctPricingEngine {
 		throw new RuleException("待确认：50角钢必须明确计算档位");
 	}
 
+	// 法兰价必须同时唯一命中材质、规格和数值相等的档位，缺价或重复都转为待确认。
 	private static Map<String, Object> selectFlange(Map<String, Object> catalog, String material, int size,
 			BigDecimal grade) {
 		List<Map<String, Object>> matches = list(catalog.get("flanges")).stream()
@@ -190,12 +219,17 @@ public final class DuctPricingEngine {
 		return matches.get(0);
 	}
 
+	/**
+	 * 计算角钢每米综合价；基准公式按档位、元/吨价格、6 米/根和每米加工费换算，具体算式以发布指标为准。
+	 *
+	 */
 	private static BigDecimal flangePrice(Map<String, Object> f, Map<String, Object> catalog) {
 		return eval(map(catalog.get("expressions")), "flange_per_meter",
 				env(map(catalog.get("rates")), "flange_grade", f.getOrDefault("grade", f.get("kg_per_bar")),
 						"ton_price", f.get("ton_price"), "flange_processing", f.get("processing_per_m")));
 	}
 
+	// 整单付款方案必须对应是否安装；这里只读取系数，行金额尚不乘入。
 	private static Map<String, Object> payment(Map<String, Object> options, Map<String, Object> catalog) {
 		String code = s(options, "payment_option");
 		if (code.isEmpty())
@@ -210,6 +244,11 @@ public final class DuctPricingEngine {
 		return env(selected, "coefficient", positive(selected.get("coefficient"), "付款系数"));
 	}
 
+	/**
+	 * 法兰或附件先按面积及税费系数形成单价并四舍五入到 1 位，再乘实际米数/数量并保留 1 位。
+	 * 含税金额和未税金额分别计算，差额供明细显示。
+	 *
+	 */
 	private static Map<String, Object> pricedItem(BigDecimal base, BigDecimal quantity, BigDecimal areaFactor,
 			BigDecimal taxFactor) {
 		BigDecimal untaxedUnit = round(mul(base, areaFactor)), unit = round(mul(base, areaFactor, taxFactor));
@@ -220,14 +259,17 @@ public final class DuctPricingEngine {
 				text(amount.subtract(untaxedAmount, MC)));
 	}
 
+	// 费用展示金额统一保留 1 位小数；null 保持待确认，不能替换成零。
 	private static Map<String, Object> fee(BigDecimal amount, String status, String reason) {
 		return obj("amount", text(amount == null ? null : round(amount)), "status", status, "reason", reason);
 	}
 
+	// 保留公式与阶段结果，供内部计算明细核对，不额外增加报价金额。
 	private static Map<String, Object> trace(String step, String expression, BigDecimal value) {
 		return obj("step", step, "expression", expression, "value", text(value));
 	}
 
+	// 净面积分摊只区分镀锌和不锈钢两类，具体锌层或钢号仍在材料查价时分别匹配。
 	private static String materialFamily(String material) {
 		return material.startsWith("stainless") ? "stainless" : "galvanized";
 	}
@@ -283,6 +325,7 @@ public final class DuctPricingEngine {
 				throw new RuleException("待确认：请选择共板法兰是否需要打孔");
 			// 先固定材质、厚度、管件类型和面积，这些参数共同决定材料档位及加工费。
 			String material = material(source, options), shape = shape(source, options);
+			// 工程量已经是整行总面积（㎡），最终只乘一次，不再乘设备式数量或按宽高重算面积。
 			BigDecimal thickness = thickness(source), area = positive(source.get("engineering_quantity"), "工程量总面积");
 			Map<String, Object> catalog = map(resource.get("body")), rates = map(catalog.get("rates")),
 					expressions = map(catalog.get("expressions"));
@@ -304,19 +347,23 @@ public final class DuctPricingEngine {
 				processing = rate(rates,
 						(thickness.compareTo(n("1.5")) == 0 ? "galvanized_1_5_" : "galvanized_") + shape);
 			BigDecimal[] dimensions = dimensions(source);
+			// 矩形宽高之和 ≤520mm 时增加窄管加工费，520mm 边界也计入。
 			BigDecimal extra = dimensions != null && add(dimensions).compareTo(n("520")) <= 0
 					? rate(rates, "galvanized_narrow_extra") : ZERO;
 			processing = add(processing, extra);
+			// 半成品不计合口，成品按法兰形式取费；0.5mm 成品另加对应薄板费用。
 			BigDecimal closing = state.equals("finished")
 					? (flange.equals("round") ? rate(rates, "closing_round", "20") : rate(rates, "closing_" + flange))
 					: ZERO;
 			if (state.equals("finished") && thickness.compareTo(n("0.5")) == 0)
 				closing = add(closing, rate(rates, "closing_0_5_extra"));
+			// 开板面积系数为 1；净面积系数按圆法兰、材质和角钢/共板形式分别读取。
 			BigDecimal factor = areaBasis.equals("open") ? ONE
 					: flange.equals("round") ? rate(rates, "net_round", s(rates, "net_galvanized_common"))
 							: rate(rates, material.startsWith("stainless") ? "net_stainless"
 									: flange.equals("angle") ? "net_galvanized_angle" : "net_galvanized_common");
 			BigDecimal rowAccessory = flange.equals("common") ? accessory : ZERO;
+			// 主体公式的 area_factor 固定 1，稍后在统一结算阶段乘真实面积系数，避免重复放大。
 			Map<String, Object> env = env(rates, "ton_price", materials.get(0).get("ton_price"), "density",
 					rate(rates, material.startsWith("stainless") ? "density_stainless" : "density_galvanized"),
 					"thickness", thickness, "processing", processing, "closing", closing, "accessory_per_sqm",
@@ -372,6 +419,7 @@ public final class DuctPricingEngine {
 						throw new RuleException("客户清单未提供圆风管直径，请报价人员填写");
 					diameter = positive(m.group(1), "圆风管直径");
 				}
+				// 直径为 mm，π×直径÷1000 得到米；圆法兰分别选含税或未税材料价，不再重复乘材料税系数。
 				BigDecimal circumference = mul(rate(rates, "round_flange_pi", "3.14"), diameter).divide(n("1000"), MC);
 				BigDecimal untaxedRate = rate(rates, "round_flange_untaxed", "10");
 				roundRate = yes(options.get("tax_included")) ? rate(rates, "round_flange_taxed", "12") : untaxedRate;
@@ -389,7 +437,9 @@ public final class DuctPricingEngine {
 					basis = "round_count";
 				}
 			}
+			// 风管运费作为每㎡价进入综合单价；费用汇总中的运费只展示，不二次加入总额。
 			combined = add(combined, freight);
+			// 综合单价和行金额依次四舍五入保留 1 位；实际法兰米数或数量费用随后单独加到本行。
 			BigDecimal untaxedUnit = round(mul(add(combined, roundUntaxedArea), factor));
 			BigDecimal unit = round(mul(add(mul(combined, tax), roundArea), factor));
 			BigDecimal bodyAmount = round(mul(unit, area)), untaxedAmount = round(mul(untaxedUnit, area)),
@@ -428,6 +478,7 @@ public final class DuctPricingEngine {
 					"rule", resource, "payment_coefficient", text(coefficient), "payment_applied", false, "coverage",
 					obj("installation", false, "freight", yes(options.get("include_freight"))), "tax_basis",
 					yes(options.get("tax_included")) ? "included" : "excluded"));
+			// 保存本次试算真实使用的公式与数值，内部明细无需重新读取可能已经变化的指标。
 			out.put("calculation_inputs", obj("material_formula", s(expressions, "material_price"), "body_formula",
 					s(expressions, "body_sale"), "ton_price", materials.get(0).get("ton_price"), "density",
 					text(n(env.get("density"))), "thickness", text(thickness), "material_price", text(materialPrice),
@@ -526,8 +577,9 @@ public final class DuctPricingEngine {
 				if (f.equals("common") && st.equals("semi"))
 					semiCommonFamilies.add(family);
 			}
+			// 预扫描失败由逐行计算给出具体原因，不在这里重复添加同一行的问题。
 			catch (RuleException ignored) {
-				/* Reported per row. */ }
+				/* 具体原因在本行试算时返回。 */ }
 		}
 		// 一旦填写整单30#/40#法兰米数，就按整单另列，相关行不再重复按㎡折算法兰。
 		boolean aggregate = !blank(options.get("flange_30_meters")) || !blank(options.get("flange_40_meters"));
@@ -560,6 +612,7 @@ public final class DuctPricingEngine {
 			try {
 				if (!common)
 					accessoryMode = "not_applicable";
+				// 实际角码/卡扣另列仅适用于存在半成品共板风管的整单；否则仍按每㎡附件费计入。
 				else if ((blank(options.get("corner_count")) && blank(options.get("clip_meters"))) || !semiCommon) {
 					accessoryMode = "per_sqm";
 					accessory = rate(rates, "accessory_per_sqm");
@@ -594,6 +647,7 @@ public final class DuctPricingEngine {
 			rows.add(row(source, options, resource, payment, accessory, aggregate));
 		List<Map<String, Object>> priced = rows.stream().filter(r -> s(r, "status").equals("priced")).toList();
 		int pending = (int) rows.stream().filter(r -> s(r, "status").equals("pending")).count();
+		// 材料行、整单实际法兰和另列附件各汇总一次；待确认与已排除行不计入已确定小计。
 		BigDecimal subtotal = add(sum(priced, "amount"), sum(aggregateItems, "amount"), sum(accessoryItems, "amount"));
 		BigDecimal untaxedSubtotal = add(sum(priced, "untaxed_amount"), sum(aggregateItems, "untaxed_amount"),
 				sum(accessoryItems, "untaxed_amount"));
@@ -638,6 +692,7 @@ public final class DuctPricingEngine {
 			f.put("unit_price", factors.size() == 1 ? text(round(mul(base, factors.iterator().next(), tax))) : null);
 			fees.put("freight", f);
 		}
+		// 税额只展示已含在各项金额中的含税差额，整单合计不再另加税额。
 		BigDecimal taxAmount = yes(options.get("tax_included")) ? subtotal.subtract(untaxedSubtotal, MC) : ZERO;
 		fees.put("tax",
 				fee(taxAmount, yes(options.get("tax_included")) ? "ready" : "not_applicable", "含税差额已计入各项，不重复加总"));

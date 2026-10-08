@@ -15,8 +15,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 import javax.sql.DataSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
+/** 报价库隔离回归：核对主库与报价库的JDBC绑定及各自事务的回滚边界。 */
 class QuotationDataSourceTests {
 
+	/**
+	 * 同时创建系统和报价连接池，在两个独立内存库中写入探针数据。
+	 * 分别回滚主事务与报价事务，验证一个库的回滚不会误回滚另一个库的数据。
+	 */
 	@Test
 	void systemAndQuotationUseSeparateDatabasesAndTransactionManagers() {
 		new ApplicationContextRunner()
@@ -32,8 +37,7 @@ class QuotationDataSourceTests {
 				assertThat(context).hasNotFailed().hasBean("dataSource");
 				DataSource system = context.getBean(DataSource.class);
 				DruidDataSource quotation = context.getBean("quotationDataSource", DruidDataSource.class);
-				// Production uses MySQL; the test substitutes an isolated in-memory
-				// driver.
+				// 生产报价库使用MySQL，这里替换为隔离H2驱动，避免连接实际业务库。
 				quotation.setDriverClassName("org.h2.Driver");
 				assertThat(system).isNotSameAs(quotation);
 				JdbcTemplate systemJdbc = context.getBean(JdbcTemplate.class);

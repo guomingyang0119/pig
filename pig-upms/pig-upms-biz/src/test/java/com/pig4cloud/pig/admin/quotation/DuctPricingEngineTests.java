@@ -11,8 +11,16 @@ import java.util.zip.GZIPInputStream;
 import static org.junit.jupiter.api.Assertions.*;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 
+/**
+ * 风管报价回归验证：覆盖迁移基准、混合材质的净面积分摊及成本算式的限制。
+ *
+ */
 class DuctPricingEngineTests {
 
+	/**
+	 * 用冻结基准逐项核对风管、安装和整单输出，固定试算日期防止生效版本随执行日漂移。
+	 *
+	 */
 	@TestFactory
 	Stream<DynamicTest> matchesPythonV16GoldenCases() throws IOException {
 		Map<String, Object> fixture;
@@ -28,6 +36,7 @@ class DuctPricingEngineTests {
 		}));
 	}
 
+	// 递归核对基准字段与列表顺序，数值按大小比较而不要求字符串小数位一致。
 	private static void compare(Object expected, Object actual, String path) {
 		if (expected instanceof Map<?, ?> m) {
 			assertInstanceOf(Map.class, actual, path);
@@ -51,6 +60,7 @@ class DuctPricingEngineTests {
 		assertEquals(expected, actual, path);
 	}
 
+	// 读取源指标并构造发布态资源，固定到一个系列以避免版本歧义。
 	private Map<String, Object> catalogResource() throws IOException {
 		Map<String, Object> catalog = new ObjectMapper().readValue(DuctExportService.asset("duct-catalog-seed.json"),
 				Map.class);
@@ -58,6 +68,7 @@ class DuctPricingEngineTests {
 				"published", "body", catalog);
 	}
 
+	// 用相同尺寸和面积构造镀锌/不锈钢两行，只改变待验证的面积及法兰口径。
 	private Map<String, Object> mixedQuote(String areaBasis, String flange) {
 		Map<String, Object> options = obj("area_basis", areaBasis, "product_state", "semi", "shape", "semi_unspecified",
 				"zinc_layer", "40", "flange", flange, "include_common_punch", false, "tax_included", false,
@@ -71,11 +82,16 @@ class DuctPricingEngineTests {
 		return obj("duct_options", options, "rows", rows);
 	}
 
+	// 固定日期和模板确认状态，聚焦风管规则本身的金额与待确认结果。
 	private Map<String, Object> calculateMixed(Map<String, Object> quote) throws IOException {
 		return new DuctPricingEngine().calculate(quote, List.of(catalogResource()),
 				obj("formal_template_confirmed", true), LocalDate.of(2026, 9, 23));
 	}
 
+	/**
+	 * 确认镀锌与 304 不锈钢各自查价，行单价不同且汇总只加各行金额，不错误合并材料口径。
+	 *
+	 */
 	@Test
 	void mixedGalvanizedAndStainlessRowsArePricedIndependentlyAndSummed() throws IOException {
 		Map<String, Object> result = calculateMixed(mixedQuote("open", "common"));
@@ -92,6 +108,10 @@ class DuctPricingEngineTests {
 		assertEquals(0, rowSum.compareTo(n(result.get("total"))));
 	}
 
+	/**
+	 * 净面积混合材质时整单实际角码无法确定分摊系数，附件待确认，但两条风管仍各自完成试算。
+	 *
+	 */
 	@Test
 	void mixedNetAreaActualAccessoriesOnlyRaiseAllocationIssueWithoutBlockingRows() throws IOException {
 		Map<String, Object> quote = mixedQuote("net", "common");
@@ -103,6 +123,10 @@ class DuctPricingEngineTests {
 		assertNull(result.get("total"));
 	}
 
+	/**
+	 * 净面积混合材质的整单法兰米数无法分配系数时仅保留整单待确认，已明确本体行仍可查看金额。
+	 *
+	 */
 	@Test
 	void mixedNetAreaAggregateFlangeMetersOnlyRaiseAllocationIssueWithoutBlockingRows() throws IOException {
 		Map<String, Object> quote = mixedQuote("net", "angle");
@@ -114,10 +138,15 @@ class DuctPricingEngineTests {
 		assertNull(result.get("total"));
 	}
 
+	// 把整单问题列表转成字符串，核对具体的混合材质分摊提示。
 	private static List<String> listOfStrings(Object value) {
 		return ((List<?>) value).stream().map(Objects::toString).toList();
 	}
 
+	/**
+	 * 拒绝脚本式调用、成员访问、非法运算、零除数及超限数值/嵌套，同时核验允许函数和四舍五入结果。
+	 *
+	 */
 	@Test
 	void formulaIsBoundedAndDoesNotExecuteCode() {
 		for (String expression : List.of("Runtime.getRuntime()", "__import__('os')", "1/0", "2**3", "x.class",
@@ -127,6 +156,10 @@ class DuctPricingEngineTests {
 		assertEquals(0, n("10").compareTo(DecimalFormula.evaluate("max(abs(-5),ceil(9.1))", Map.of())));
 	}
 
+	/**
+	 * 同材质同板厚重复配置会使查价不唯一，发布指标前必须拒绝。
+	 *
+	 */
 	@Test
 	void duplicateCatalogPriceIsRejected() throws IOException {
 		Map<String, Object> b;

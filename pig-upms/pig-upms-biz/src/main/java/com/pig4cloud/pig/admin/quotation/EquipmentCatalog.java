@@ -4,35 +4,49 @@ import java.time.LocalDate;
 import java.util.*;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 
-/** Validation and effective-version selection ported from equipment_catalog.py. */
+/**
+ * 设备供货指标的结构、成本规则及生效版本校验。
+ * 参数沿用已核对源表：阀体公式、风口面积成本、风机本体/工况、电机和外购设备价格各自维护。
+ * 发布前校验可计算性；报价时仍须唯一匹配具体材质、型号和工况，不能凭相近规格借价。
+ */
 public final class EquipmentCatalog {
 
 	private EquipmentCatalog() {
 	}
 
+	// 毛利、税费、阀门/消声设备成本及运费门槛等受支持参数；必须全部可读取且满足各自范围。
 	private static final Set<String> RATES = Set.of("gross_margin", "tax_factor", "round_factor", "valve_steel",
 			"density", "split_width", "split_height", "splice_width", "splice_height", "fire_splice", "manual_splice",
 			"check_splice", "remote_extra", "near_control", "remote_control", "auto_control", "panel_rate",
 			"panel_edge", "silencer_rate", "plenum_rate", "double_layer_rate", "silencer_edge", "elbow_taxed_rate",
 			"freight_threshold", "thickness_1_factor", "thickness_1_2_factor", "angle_factor");
 
+	// 具有阀体组成成本的类型；余压阀在引擎中另按防火阀规格代价。
 	public static final Set<String> VALVES = Set.of("fire", "electric_control", "electric_fire", "manual", "check",
 			"multi_leaf", "plate_smoke");
 
+	// 阀体各组成项公式，包括普通、多叶及板式排烟结构。
 	private static final Set<String> EXPRESSIONS = Set.of("frame", "blade", "labor", "link", "corners", "shaft",
 			"consumables", "brace", "multi_frame", "multi_blade", "multi_back", "multi_brace", "plate_frame",
 			"plate_blade", "plate_consumables", "plate_brace");
 
+	// 阀体公式白名单：宽高和板厚按 mm，材料价格按元/吨，组数、叶片和拉条数由引擎计算。
 	private static final Set<String> VARIABLES = Set.of("width", "height", "groups", "blades", "density",
 			"frame_thickness", "blade_thickness", "frame_price", "blade_price", "back_price", "brace_count",
 			"labor_base");
 
+	// 存在明确面积成本配置的风口类型；常开式百叶需另确认计价口径。
 	private static final Set<String> LOUVERS = Set.of("single", "single_valve", "single_mesh", "double", "double_valve",
 			"double_mesh", "rain", "rain_mesh", "gravity", "gravity_valve", "access", "hinged", "hinged_mesh",
 			"diffuser", "diffuser_valve", "linear", "linear_valve", "abs_single", "abs_double", "abs_hinged_mesh");
 
+	// 设备运费地区系数仅覆盖已确认的六省区，不能自动推算其他地区。
 	public static final Set<String> REGIONS = Set.of("贵州", "四川", "广西", "云南", "陕西", "海南");
 
+	/**
+	 * 对外发布校验入口；把缺失列表、错误对象结构等异常转成可以展示给报价负责人的指标错误。
+	 *
+	 */
 	public static void validate(Map<String, Object> body) {
 		try {
 			validateBody(body);
@@ -42,6 +56,11 @@ public final class EquipmentCatalog {
 		}
 	}
 
+	/**
+	 * 逐项检查参数、付款编码、公式变量和查价记录。
+	 * 设备毛利率取 [0,1)，运费及防爆倍率不小于 1；止回阀拼接费固定为 0。
+	 *
+	 */
 	private static void validateBody(Map<String, Object> b) {
 		Map<String, Object> rates = map(b.get("rates"));
 		for (String key : RATES)
@@ -78,12 +97,14 @@ public final class EquipmentCatalog {
 			for (String field : List.of("mechanism", "blade_thickness", "labor_base"))
 				if (n(map(map(b.get("valves")).get(key)).get(field)).signum() < 0)
 					throw new RuleException("阀体成本指标不能为负");
+		// 每种风口四个值依次为面积成本、最低成本、宽高增加值和附件倍率，均不能为负。
 		for (String key : LOUVERS) {
 			Object entry = map(b.get("louvers")).get(key);
 			if (!(entry instanceof List<?> values) || values.size() != 4
 					|| values.stream().anyMatch(v -> n(v).signum() < 0))
 				throw new RuleException("风口面积成本配置不正确：" + key);
 		}
+		// 列表编号用于选型与候选确认，同一列表内必须非空且唯一。
 		for (String kind : List.of("materials", "fan_points", "fan_bodies", "motors", "purchased")) {
 			if (!(b.get(kind) instanceof List<?>))
 				throw new RuleException("设备指标缺少列表：" + kind);
@@ -92,6 +113,7 @@ public final class EquipmentCatalog {
 				if (blank(row.get("id")) || !ids.add(s(row, "id")))
 					throw new RuleException(kind + "存在空编号或重复编号");
 		}
+		// 不锈钢按 201/304 材质和对应板厚唯一查吨价，不允许一个厚度有多个价格。
 		Set<String> materials = new HashSet<>();
 		for (Map<String, Object> row : list(b.get("materials"))) {
 			if (!Set.of("201", "304").contains(s(row, "material")) || n(row.get("thickness")).signum() <= 0
@@ -100,6 +122,7 @@ public final class EquipmentCatalog {
 			if (!materials.add(s(row, "material") + ":" + n(row.get("thickness")).stripTrailingZeros().toPlainString()))
 				throw new RuleException("同材质板厚只能配置一条吨价");
 		}
+		// 风机工况需具备机号、风量、风压、转速、功率和极数；单双速用功率/极数列表表达。
 		for (Map<String, Object> row : list(b.get("fan_points"))) {
 			for (String key : List.of("size", "airflow", "pressure", "speed"))
 				if (n(row.get(key)).signum() <= 0)
@@ -111,6 +134,7 @@ public final class EquipmentCatalog {
 				throw new RuleException("风机型号及极数不完整");
 			checkNumbers(row.get("poles"), "风机型号及极数不完整");
 		}
+		// 本体公式仅允许钢材吨价、机号和板厚变量，不允许引用未确认的电机或售价。
 		for (Map<String, Object> row : list(b.get("fan_bodies"))) {
 			if (n(row.get("steel_price")).signum() <= 0 || n(row.get("size")).signum() <= 0)
 				throw new RuleException("风机本体指标不正确");
@@ -127,6 +151,7 @@ public final class EquipmentCatalog {
 		for (Map<String, Object> row : list(b.get("purchased")))
 			if (n(row.get("cost")).signum() < 0 || blank(row.get("model")))
 				throw new RuleException("外购设备基础价不完整");
+		// 防爆档位按成本上限递增，末档不设上限；实际计算时上限包含本数。
 		List<Map<String, Object>> tiers = list(b.get("explosion_tiers"));
 		if (tiers.isEmpty() || tiers.get(tiers.size() - 1).get("limit") != null)
 			throw new RuleException("防爆系数缺少最高档");
@@ -142,11 +167,17 @@ public final class EquipmentCatalog {
 		}
 	}
 
+	// 功率和极数必须是非空正数列表，供单双速风机与电机组合精确匹配。
 	private static void checkNumbers(Object value, String message) {
 		if (!(value instanceof List<?> values) || values.isEmpty() || values.stream().anyMatch(v -> n(v).signum() <= 0))
 			throw new RuleException(message);
 	}
 
+	/**
+	 * 按指标系列取已到生效日的最新正式版本，再筛选发布且仍在有效期内的版本。
+	 * 停用或过期的新版本会挡住旧价；未来版本和草稿不提前生效。
+	 *
+	 */
 	public static List<Map<String, Object>> active(List<Map<String, Object>> resources, LocalDate date) {
 		Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
 		for (Map<String, Object> r : resources) {
