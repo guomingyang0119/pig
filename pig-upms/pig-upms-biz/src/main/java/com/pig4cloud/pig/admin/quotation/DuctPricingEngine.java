@@ -16,7 +16,7 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 public final class DuctPricingEngine {
 
 	// 引擎规则版本随计算行为变化递增，历史报价可据此识别是否需要重新试算。
-	public static final String VERSION = "duct-v16";
+	public static final String VERSION = "duct-v20";
 
 	// 含安装报价沿用的施工范围说明，会随计算结果进入页面或导出备注。
 	public static final List<String> INSTALLATION_NOTES = List.of("不含风机控制箱及控制箱到风机的电线、电器。", "不含风机基础预制的制作；不含抗震支架。",
@@ -119,6 +119,9 @@ public final class DuctPricingEngine {
 	static String flange(Map<String, Object> row, Map<String, Object> options) {
 		String value = alias(attr(row, "flange"), Map.of("共板法兰", "common", "共板", "common", "角钢法兰", "angle", "角钢",
 				"angle", "角铁法兰", "angle", "角铁", "angle", "圆法兰", "round", "圆形法兰", "round"));
+		// “法兰连接”只描述连接方式，不能覆盖明确的本行描述或整单默认；其他未知形式仍需确认。
+		if (Set.of("法兰", "法兰连接", "法兰连接形式", "法兰连接方式").contains(value.replaceAll("\\s+", "")))
+			value = "";
 		String desc = description(row);
 		if (value.isEmpty())
 			value = desc.contains("圆法兰") ? "round"
@@ -146,7 +149,8 @@ public final class DuctPricingEngine {
 	}
 
 	// 读取矩形宽高，单位 mm；尺寸用于窄管附加加工费和角钢规格判断，不用于重新推算总工程量。
-	private static BigDecimal[] dimensions(Map<String, Object> row) {
+	static BigDecimal[] dimensions(Map<String, Object> row) {
+		if (s(map(row.get("attributes")), "duct_cross_section").equals("circular")) return null;
 		if (!blank(attr(row, "width")) && !blank(attr(row, "height")))
 			return new BigDecimal[] { positive(attr(row, "width"), "宽"), positive(attr(row, "height"), "高") };
 		Matcher m = match("(?<!\\d)(\\d{2,4})\\s*[x×*]\\s*(\\d{2,4})(?!\\d)",
@@ -155,7 +159,7 @@ public final class DuctPricingEngine {
 	}
 
 	// 热镀锌角钢需显式属性或文字依据，其余情况按黑角钢查价。
-	private static String flangeMaterial(Map<String, Object> row) {
+	static String flangeMaterial(Map<String, Object> row) {
 		String explicit = alias(attr(row, "flange_material"),
 				Map.of("黑角铁", "black", "黑角钢", "black", "热镀锌角铁", "hot_galvanized", "热镀锌角钢", "hot_galvanized"));
 		if (Set.of("black", "hot_galvanized").contains(explicit))
@@ -168,7 +172,7 @@ public final class DuctPricingEngine {
 	 * 最大边 ≥1600mm 用 40，0.5～1.2mm 用 30，1.5/2mm 用 40；其他板厚需确认。
 	 *
 	 */
-	private static int flangeSize(Map<String, Object> row, BigDecimal thickness) {
+	static int flangeSize(Map<String, Object> row, BigDecimal thickness) {
 		if (!blank(attr(row, "flange_size"))) {
 			String value = str(attr(row, "flange_size")).replace("角钢", "").trim();
 			if (!Set.of("30", "40", "50").contains(value))
@@ -193,7 +197,7 @@ public final class DuctPricingEngine {
 	 * 档位进入指标公式，不能直接当作法兰每米价格。
 	 *
 	 */
-	private static BigDecimal grade(Map<String, Object> row, int size) {
+	static BigDecimal grade(Map<String, Object> row, int size) {
 		Object explicit = blank(attr(row, "flange_grade")) ? attr(row, "flange_weight") : attr(row, "flange_grade");
 		if (!blank(explicit))
 			return positive(explicit, "角钢法兰计算档位");
@@ -205,6 +209,26 @@ public final class DuctPricingEngine {
 		if (size == 40)
 			return n("12.5");
 		throw new RuleException("待确认：50角钢必须明确计算档位");
+	}
+
+	/** 截面只管理尺寸口径，与直管/异形件加工和连接形式独立。 */
+	static String crossSection(Map<String, Object> row) {
+		String explicit = alias(attr(row, "duct_cross_section"), Map.of("矩形", "rectangular", "圆形", "circular"));
+		if (Set.of("rectangular", "circular").contains(explicit)) return explicit;
+		String desc = description(row);
+		if (desc.contains("圆形") || desc.contains("圆型") || desc.contains("螺旋")
+				|| match("(?:[ΦφØø]|DN|直径\\s*[:：=]?)\\s*\\d", desc).find()) return "circular";
+		if (desc.contains("矩形") || desc.contains("方形")) return "rectangular";
+		if (!blank(attr(row, "diameter")) || s(map(row.get("attributes")), "flange").equals("round")) return "circular";
+		return dimensions(row) == null ? "" : "rectangular";
+	}
+
+	static BigDecimal diameter(Map<String, Object> row) {
+		if (!blank(attr(row, "diameter"))) return positive(attr(row, "diameter"), "圆风管直径");
+		Matcher m = match("(?:[ΦφØø]|DN|直径\\s*[:：=]?)\\s*(\\d+(?:\\.\\d+)?)",
+				s(row, "spec") + " " + str(attr(row, "model")) + " " + s(row, "name"));
+		if (!m.find()) throw new RuleException("客户清单未提供圆风管直径，请报价人员填写");
+		return positive(m.group(1), "圆风管直径");
 	}
 
 	// 法兰价必须同时唯一命中材质、规格和数值相等的档位，缺价或重复都转为待确认。
@@ -293,19 +317,22 @@ public final class DuctPricingEngine {
 	 */
 	private Map<String, Object> row(Map<String, Object> source, Map<String, Object> options,
 			Map<String, Object> resource, Map<String, Object> payment, BigDecimal accessory, boolean aggregate) {
+		var scope = InstallationPricingEngine.materialScopeRow(source, yes(options.get("include_installation")));
+		if (scope != null)
+			return scope;
 		Map<String, Object> out = obj("status", "pending", "reason", "", "unit_price", null, "amount", null, "trace",
 				new ArrayList<>(), "billing_unit", "㎡");
-		if (yes(source.get("excluded"))) {
-			out.put("reason", blank(source.get("exclude_reason")) ? "排除计价需要填写原因" : s(source, "exclude_reason"));
-			if (!blank(source.get("exclude_reason")))
-				out.put("status", "excluded");
-			return out;
-		}
 		try {
 			if (!blank(source.get("product_rule_issue")))
 				throw new RuleException(s(source, "product_rule_issue"));
-			if (yes(source.get("source_issue")) && !yes(source.get("source_issue_confirmed")))
-				throw new RuleException("原文件存在未缓存公式或错误值，请先核对");
+			String productDescription = description(source);
+			if (map(source.get("_product_rule_resource")).isEmpty() && productDescription.contains("风管")
+					&& (productDescription.contains("复合") || productDescription.contains("彩钢") && productDescription.contains("镀锌")))
+				throw new RuleException("待确认：复合风管缺少完整计价规则，请确认面层、芯材、内层及加工成本，不能仅按普通镀锌风管报价");
+			if (yes(source.get("source_issue")) && !yes(source.get("source_issue_confirmed"))) {
+				String sourceReason = EquipmentReview.sourceReason(new LinkedHashMap<>(source));
+				throw new RuleException(sourceReason.isBlank() ? "原文件存在未缓存公式或错误值，请先核对" : sourceReason);
+			}
 			if ((!s(source, "category").isEmpty() && !s(source, "category").equals("风管"))
 					|| (s(source, "category").isEmpty() && !s(source, "name").contains("风管")))
 				throw new RuleException("首版仅对风管类自动报价");
@@ -319,6 +346,8 @@ public final class DuctPricingEngine {
 				throw new RuleException("待确认：请选择整单含税或不含税");
 			String state = state(source, options), flange = flange(source, options),
 					areaBasis = s(options, "area_basis");
+			if (s(map(source.get("attributes")), "duct_cross_section").equals("rectangular") && flange.equals("round"))
+				throw new RuleException("矩形截面与圆法兰口径需核对，请重新选择截面或连接方式");
 			if (!Set.of("open", "net").contains(areaBasis))
 				throw new RuleException("待确认：请选择开板面积或净面积");
 			if (flange.equals("common") && !bool(options.get("include_common_punch")))
@@ -346,7 +375,9 @@ public final class DuctPricingEngine {
 			else
 				processing = rate(rates,
 						(thickness.compareTo(n("1.5")) == 0 ? "galvanized_1_5_" : "galvanized_") + shape);
-			BigDecimal[] dimensions = dimensions(source);
+			// 自定义规则的圆法兰口径不沿用隐藏矩形尺寸；未进入新规则的历史行保留原计价口径。
+			BigDecimal[] dimensions = flange.equals("round") && !map(source.get("_product_rule_resource")).isEmpty()
+					? null : dimensions(source);
 			// 矩形宽高之和 ≤520mm 时增加窄管加工费，520mm 边界也计入。
 			BigDecimal extra = dimensions != null && add(dimensions).compareTo(n("520")) <= 0
 					? rate(rates, "galvanized_narrow_extra") : ZERO;
@@ -410,15 +441,7 @@ public final class DuctPricingEngine {
 				}
 			}
 			else {
-				if (!blank(attr(source, "diameter")))
-					diameter = positive(attr(source, "diameter"), "圆风管直径");
-				else {
-					Matcher m = match("(?:Φ|φ|Ø|直径)\\s*(\\d+(?:\\.\\d+)?)",
-							s(source, "spec") + " " + str(attr(source, "model")) + " " + s(source, "name"));
-					if (!m.find())
-						throw new RuleException("客户清单未提供圆风管直径，请报价人员填写");
-					diameter = positive(m.group(1), "圆风管直径");
-				}
+				diameter = diameter(source);
 				// 直径为 mm，π×直径÷1000 得到米；圆法兰分别选含税或未税材料价，不再重复乘材料税系数。
 				BigDecimal circumference = mul(rate(rates, "round_flange_pi", "3.14"), diameter).divide(n("1000"), MC);
 				BigDecimal untaxedRate = rate(rates, "round_flange_untaxed", "10");
@@ -541,6 +564,10 @@ public final class DuctPricingEngine {
 
 	public Map<String, Object> calculate(Map<String, Object> quote, List<Map<String, Object>> resources,
 			Map<String, Object> policy, LocalDate day, boolean supplyOnly) {
+		if (!list(quote.get("rows")).isEmpty() && list(quote.get("rows")).stream()
+				.allMatch(r -> yes(r.get("excluded")) || yes(r.get("installation_only"))))
+			return InstallationPricingEngine.finalizeOrder(quote,
+					InstallationPricingEngine.scopeOnlyResult(quote, policy, VERSION), resources, supplyOnly, day);
 		Map<String, Object> options = new LinkedHashMap<>(map(quote.get("duct_options")));
 		options.put("include_installation", InstallationPricingEngine.enabled(quote));
 		List<Map<String, Object>> catalogs = DuctCatalog.active(resources, day);
@@ -564,7 +591,8 @@ public final class DuctPricingEngine {
 		boolean common = false, semiCommon = false;
 		Set<String> angleFamilies = new HashSet<>(), semiCommonFamilies = new HashSet<>();
 		for (Map<String, Object> source : sources) {
-			if (yes(source.get("excluded")) || (!s(source, "category").isEmpty() && !s(source, "category").equals("风管"))
+			if (yes(source.get("excluded")) || yes(source.get("installation_only"))
+					|| (!s(source, "category").isEmpty() && !s(source, "category").equals("风管"))
 					|| (s(source, "category").isEmpty() && !s(source, "name").contains("风管")))
 				continue;
 			try {

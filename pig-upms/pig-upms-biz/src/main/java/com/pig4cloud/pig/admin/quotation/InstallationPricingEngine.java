@@ -16,7 +16,7 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 public final class InstallationPricingEngine {
 
 	// 安装规则版本用于历史计算追溯，改变结算口径时需重新试算。
-	public static final String VERSION = "installation-v5";
+	public static final String VERSION = "installation-v7";
 
 	// 安装支持的计量单位；只有已确认的少量产品允许等量使用“台/个/套”，其余不能自动换算。
 	private static final Set<String> UNITS = Set.of("㎡", "台", "个", "套");
@@ -29,11 +29,93 @@ public final class InstallationPricingEngine {
 				|| yes(map(quote.get("equipment_options")).get("include_installation"));
 	}
 
-	/** 复合订单和设备订单沿用设备税口径，纯风管订单沿用风管税口径。 */
+	/** 明确不供货的行先处理报价范围，不能进入产品识别、材料成本或材料运费。 */
+	static Map<String, Object> materialScopeRow(Map<String, Object> row, boolean installationIncluded) {
+		if (!yes(row.get("excluded")) && !yes(row.get("installation_only")))
+			return null;
+		var out = obj("status", "pending", "reason", "", "unit_price", null, "amount", null,
+				"trace", new ArrayList<>(), "candidates", new ArrayList<>());
+		if (yes(row.get("excluded"))) {
+			if (yes(row.get("installation_only")))
+				out.put("reason", "不报价与只安装不能同时选择");
+			else if (blank(row.get("exclude_reason")))
+				out.put("reason", "排除计价需要填写原因");
+			else
+				out.putAll(obj("status", "excluded", "reason", row.get("exclude_reason")));
+		}
+		else if (!installationIncluded)
+			out.put("reason", "本行选择只安装，请先启用整单安装并确认安装项目");
+		else
+			out.putAll(obj("status", "installation_only", "reason", "只安装，不含材料供货", "amount", "0",
+					"body_amount", "0", "freight_per_unit", "0", "coverage", obj("installation", false, "freight", false)));
+		return out;
+	}
+
+	/** 没有材料供货的子单保留原行顺序，安装和有效付款方案仍在整单末尾核验。 */
+	static Map<String, Object> scopeOnlyResult(Map<String, Object> quote, Map<String, Object> policy, String version) {
+		List<Map<String, Object>> rows = list(quote.get("rows")).stream()
+			.map(r -> materialScopeRow(r, enabled(quote))).toList();
+		List<String> issues = new ArrayList<>();
+		int pending = (int) rows.stream().filter(r -> s(r, "status").equals("pending")).count();
+		if (pending > 0)
+			issues.add("有" + pending + "项报价范围待确认");
+		if (!yes(policy.get("formal_template_confirmed")))
+			issues.add("正式客户模板尚未确认");
+		return obj("rows", rows, "subtotal", "0", "material_total", "0", "equipment_material_total", "0",
+				"equipment_freight_total", "0", "total", null, "pending_count", pending, "issues", issues,
+				"formal_ready", false, "fees", obj("equipment_freight", obj("status", "not_applicable", "amount", "0",
+						"reason", "本单没有设备材料供货", "included_in_rows", false)), "policy", policy, "payment", null,
+				"accessory_items", new ArrayList<>(), "aggregate_flanges", new ArrayList<>(), "engine_version", version);
+	}
+
+	/** 纯安装仍读取已发布目录中的明确付款方案，但不校验本次不使用的材料成本规则。 */
+	private static Map<String, Object> installationOnlyPayment(Map<String, Object> quote,
+			List<Map<String, Object>> resources, LocalDate day, String engineVersion) {
+		String mode = s(quote, "pricing_mode");
+		Set<String> groups = new LinkedHashSet<>();
+		for (var row : list(quote.get("rows")))
+			if (!yes(row.get("excluded")) && yes(row.get("installation_only")))
+				groups.add(mode.equals("mixed_v1") ? duct(row) ? "duct" : "equipment"
+						: mode.equals("duct_v1") || engineVersion.startsWith("duct-") ? "duct" : "equipment");
+		Map<String, Object> selected = null;
+		Object selectedTax = null;
+		for (String group : groups) {
+			var options = map(quote.get(group + "_options"));
+			if (!bool(options.get("tax_included")))
+				throw new RuleException("请明确安装报价是否含税");
+			var active = group.equals("duct") ? DuctCatalog.active(resources, day) : EquipmentCatalog.active(resources, day);
+			if (active.size() != 1)
+				throw new RuleException("只安装报价需要唯一已发布的付款方案来源，请核对" + (group.equals("duct") ? "风管" : "设备") + "指标");
+			var catalog = map(active.get(0).get("body"));
+			var terms = group.equals("duct") ? DuctCatalog.paymentTerms(catalog) : list(catalog.get("payment_terms"));
+			var matches = terms.stream().filter(t -> s(t, "code").equals(s(options, "payment_option"))
+					&& s(t, "mode").equals(enabled(quote) ? "with_install" : "no_install")).toList();
+			if (matches.size() != 1)
+				throw new RuleException("请选择与安装状态对应的整单付款方式");
+			var term = new LinkedHashMap<>(matches.get(0));
+			term.put("coefficient", text(positive(term.get("coefficient"), "付款系数")));
+			if (selected != null && (!s(selected, "code").equals(s(term, "code"))
+					|| n(selected.get("coefficient")).compareTo(n(term.get("coefficient"))) != 0
+					|| !Objects.equals(selectedTax, options.get("tax_included"))))
+				throw new RuleException("复合只安装报价的含税口径与整单付款方案需保持一致");
+			selected = term;
+			selectedTax = options.get("tax_included");
+		}
+		return selected;
+	}
+
+	/** 复合订单优先沿用有效供货组税口径；全只安装时只读取范围内的组。 */
 	static boolean taxIncluded(Map<String, Object> quote) {
 		String mode = s(quote, "pricing_mode");
 		var equipment = map(quote.get("equipment_options"));
 		var duct = map(quote.get("duct_options"));
+		if (mode.equals("mixed_v1")) {
+			var active = list(quote.get("rows")).stream().filter(r -> !yes(r.get("excluded"))).toList();
+			var supply = active.stream().filter(r -> !yes(r.get("installation_only"))).toList();
+			var scope = supply.isEmpty() ? active : supply;
+			if (!scope.isEmpty())
+				return yes((scope.stream().anyMatch(r -> !duct(r)) ? equipment : duct).get("tax_included"));
+		}
 		if (Set.of("equipment_v1", "mixed_v1").contains(mode) && equipment.containsKey("tax_included"))
 			return yes(equipment.get("tax_included"));
 		if (duct.containsKey("tax_included"))
@@ -105,7 +187,9 @@ public final class InstallationPricingEngine {
 	/** 无安装个数的消声弯头按整单法兰口径计价；整单同时出现两种法兰时采用角钢法兰。 */
 	private static String silencerElbowAreaProject(Map<String, Object> row, Map<String, Object> quote, boolean shaanxi) {
 		Set<String> flanges = new HashSet<>();
-		for (var quoteRow : list(quote.get("rows"))) {
+		// 单行规则试算只借用全单法兰识别上下文，不把这些行放入安装金额汇总。
+		var context = quote.containsKey("_installation_context_rows") ? list(quote.get("_installation_context_rows")) : list(quote.get("rows"));
+		for (var quoteRow : context) {
 			String value = flange(quoteRow);
 			if (!value.isEmpty())
 				flanges.add(value);
@@ -231,7 +315,7 @@ public final class InstallationPricingEngine {
 				return "sx_32";
 			if (contains(name, "板式排烟口", "远程多叶送风口"))
 				return "sx_33";
-			if (contains(name, "多叶排烟口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "电动防火风口"))
+			if (contains(name, "多叶排烟口", "多叶排烟风口", "电动百叶风口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "电动防火风口"))
 				return "sx_31";
 			if (name.contains("防火风口"))
 				return contains(name, "70", "弱电", "常开") ? "sx_29" : "sx_26";
@@ -247,7 +331,7 @@ public final class InstallationPricingEngine {
 		else {
 			if (contains(name, "板式排烟口", "板式排烟风口", "多叶排烟口"))
 				return "four_20";
-			if (contains(name, "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "组合送风口"))
+			if (contains(name, "多叶排烟风口", "电动百叶风口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "组合送风口"))
 				return "four_20";
 			if (name.contains("防火风口"))
 				return "four_22";
@@ -285,6 +369,8 @@ public final class InstallationPricingEngine {
 		String region = region(map(quote.get("installation_options")).get("region"));
 		var out = obj("name", first(row.get("name"), "安装项目"), "status", "pending", "reason", "", "amount", null);
 		try {
+			if (yes(row.get("installation_only")) && yes(entry.get("excluded")) && !yes(row.get("excluded")))
+				throw new RuleException("只安装行不能同时不计安装，请确认报价范围");
 			if (yes(entry.get("excluded")) || yes(row.get("excluded"))) {
 				Object reason = first(entry.get("exclude_reason"), row.get("exclude_reason"));
 				if (blank(reason))
@@ -333,7 +419,7 @@ public final class InstallationPricingEngine {
 			String rowName = s(row, "name");
 			boolean reviewedOutletSet = Set.of("four_18", "sx_25").contains(projectId)
 					|| Set.of("four_20", "sx_31").contains(projectId)
-							&& contains(rowName, "多叶排烟口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口")
+							&& contains(rowName, "多叶排烟口", "多叶排烟风口", "电动百叶风口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口")
 					|| Set.of("four_22", "sx_26", "sx_29", "sx_31").contains(projectId) && rowName.contains("防火风口");
 			boolean outletCountEquivalent = reviewedOutletSet && unit.equals("个")
 					&& unit(row.get("unit")).equals("套");
@@ -380,7 +466,7 @@ public final class InstallationPricingEngine {
 			BigDecimal basePrice = price, remotePrice = ZERO;
 			Map<String, Object> remoteProject = null;
 			// 远控附加仅用于四地区的自动设备安装价；手填价格视为已确认整行口径，不再自动加机构安装费。
-			if (!manual && s(project, "kind").equals("equipment") && InstallationCatalog.FOUR_REGIONS.contains(region)
+			if (!yes(row.get("_installation_profile_split")) && !manual && s(project, "kind").equals("equipment") && InstallationCatalog.FOUR_REGIONS.contains(region)
 					&& explicitRemoteControl(row) && !projectId.equals("four_17")) {
 				remoteProject = list(catalog.get("projects")).stream()
 					.filter(p -> s(p, "id").equals("four_17") && ((List<?>) p.get("regions")).contains(region))
@@ -438,12 +524,66 @@ public final class InstallationPricingEngine {
 		return out;
 	}
 
+	/** 明确本行项目/价优先；公共安装规则只提供对应，数量、地区及施工参数始终取当前报价。 */
+	static Map<String, Object> ruleLine(Map<String, Object> row, Map<String, Object> manual,
+			Map<String, Object> quote, Map<String, Object> catalog, Map<String, Object> calculated) {
+		var profile = ProductRuleInstallation.profile(row);
+		if (profile.isEmpty() || ProductRuleInstallation.primaryOverride(manual) || yes(row.get("excluded")))
+			return line(row, manual, quote, catalog, calculated);
+		boolean split = s(profile, "mode").equals("split");
+		long powerItems = list(profile.get("items")).stream().filter(item -> blank(item.get("unit_price")))
+			.filter(item -> list(catalog.get("projects")).stream().anyMatch(project -> s(project, "id").equals(s(item, "project_id")) && project.get("power_prices") instanceof List<?>))
+			.count();
+		List<Map<String, Object>> children = new ArrayList<>();
+		for (var item : list(profile.get("items"))) {
+			var childRow = new LinkedHashMap<>(row);
+			if (!blank(item.get("name"))) childRow.put("name", item.get("name"));
+			if (split) childRow.put("_installation_profile_split", true);
+			var entry = ProductRuleInstallation.effectiveEntry(item, manual);
+			Map<String, Object> child;
+			try {
+				if (split && !blank(manual.get("quantity")))
+					throw new RuleException("本行工程量不能同时用于多个分项，请清除本行工程量沿用分项规则，或选择本行整套安装项目/人工价覆盖");
+				if (split && powerItems > 1 && blank(item.get("unit_price")) && list(catalog.get("projects")).stream()
+					.anyMatch(project -> s(project, "id").equals(s(item, "project_id")) && project.get("power_prices") instanceof List<?>))
+					throw new RuleException("不同风机请分别确认安装单价或拆独立安装项目，不能共用一项安装计费功率");
+				ProductRuleInstallation.checkManualRegion(entry, quote);
+				ProductRuleInstallation.applyQuantity(row, item, entry);
+				child = line(childRow, entry, quote, catalog, calculated);
+			}
+			catch (RuleException e) {
+				child = obj("name", childRow.get("name"), "status", "pending", "amount", null, "reason", e.getMessage());
+			}
+			child.putAll(obj("quantity_expression", item.getOrDefault("quantity_expression", ""),
+					"quantity_per_product", entry.get("quantity_per_product"), "installation_source", "rule"));
+			children.add(child);
+		}
+		if (!split && children.size() == 1) return children.get(0);
+		BigDecimal taxFactor = taxIncluded(quote) ? n("1.01") : ONE;
+		var priced = children.stream().filter(child -> s(child, "status").equals("priced")).toList();
+		for (var child : priced) priceLine(child, taxFactor);
+		boolean ready = !children.isEmpty() && priced.size() == children.size();
+		BigDecimal auxiliary = priced.stream().filter(child -> child.get("auxiliary") != null)
+			.map(child -> n(map(child.get("auxiliary")).get("amount"))).reduce(ZERO, QuoteData::add);
+		return obj("name", row.get("name"), "status", ready ? "priced" : "pending", "reason",
+				String.join("；", children.stream().filter(child -> !s(child, "status").equals("priced"))
+					.map(child -> s(child, "name") + "：" + s(child, "reason")).toList()),
+				"children", children, "installation_mode", "split", "installation_source", "rule",
+				"amount", ready ? text(sum(priced, "amount")) : null,
+				"auxiliary", auxiliary.signum() == 0 ? null : obj("amount", text(auxiliary), "name", "分项安装辅材合计"),
+				"untaxed_total", ready ? text(sum(priced, "untaxed_total")) : null,
+				"tax_amount", ready ? text(sum(priced, "tax_amount")) : null,
+				"rounding_difference", ready ? text(sum(priced, "rounding_difference")) : null,
+				"quoted_amount", ready ? text(sum(priced, "quoted_amount")) : null);
+	}
+
 	// 安装汇总结果及阻止正式报价的问题列表；逐行已计算金额可展示，但有问题时汇总金额保持空。
 	public record Calculation(Map<String, Object> fee, List<String> issues) {
 	}
 
 	/** 每行先合并人工和辅材，再按安装税率计算并向上取整到整数元。 */
 	private static BigDecimal priceLine(Map<String, Object> line, BigDecimal taxFactor) {
+		if (line.get("children") != null) return n(line.get("quoted_amount"));
 		BigDecimal untaxed = add(n(line.get("amount")),
 				line.get("auxiliary") == null ? ZERO : n(map(line.get("auxiliary")).get("amount")));
 		BigDecimal taxed = mul(untaxed, taxFactor), quoted = taxed.setScale(0, RoundingMode.CEILING);
@@ -461,6 +601,21 @@ public final class InstallationPricingEngine {
 				new ArrayList<>());
 		if (!enabled(quote))
 			return new Calculation(empty, new ArrayList<>());
+		if (!list(quote.get("rows")).isEmpty() && list(quote.get("rows")).stream().allMatch(r -> yes(r.get("excluded")))
+				&& list(quote.get("installation_items")).isEmpty()) {
+			List<Map<String, Object>> lines = new ArrayList<>();
+			List<String> issues = new ArrayList<>();
+			var rows = list(quote.get("rows"));
+			for (int i = 0; i < rows.size(); i++) {
+				var line = line(rows.get(i), map(rows.get(i).get("installation")), quote, obj(), obj());
+				line.put("row_index", i);
+				lines.add(line);
+				if (s(line, "status").equals("pending"))
+					issues.add("安装费：" + s(line, "reason"));
+			}
+			empty.putAll(obj("reason", "本单产品均不在报价范围内", "lines", lines));
+			return new Calculation(empty, issues);
+		}
 		if (!quote.containsKey("installation_options"))
 			return pending(empty, "旧版整单安装金额需核对并改填安装项目，不能直接作为每㎡单价", "安装费：");
 		var active = InstallationCatalog.active(resources, day);
@@ -479,7 +634,7 @@ public final class InstallationPricingEngine {
 		List<String> issues = new ArrayList<>();
 		var rows = list(quote.get("rows"));
 		for (int i = 0; i < rows.size(); i++) {
-			var line = line(rows.get(i), map(rows.get(i).get("installation")), quote, catalog,
+			var line = ruleLine(rows.get(i), map(rows.get(i).get("installation")), quote, catalog,
 					i < calculatedRows.size() ? calculatedRows.get(i) : obj());
 			line.put("row_index", i);
 			lines.add(line);
@@ -633,6 +788,18 @@ public final class InstallationPricingEngine {
 		result.putIfAbsent("material_total", result.get("subtotal"));
 		List<String> issues = (List<String>) result.get("issues");
 		issues.addAll(installation.issues());
+		var calculatedRows = list(result.get("rows"));
+		if (!calculatedRows.isEmpty() && calculatedRows.stream().allMatch(r -> s(r, "status").equals("excluded")))
+			issues.add("所有产品均不报价，不能生成空正式报价单");
+		if (map(result.get("payment")).isEmpty()
+				&& calculatedRows.stream().anyMatch(r -> s(r, "status").equals("installation_only"))) {
+			try {
+				result.put("payment", installationOnlyPayment(quote, resources, day, s(result, "engine_version")));
+			}
+			catch (RuleException e) {
+				issues.add(e.getMessage());
+			}
+		}
 		var term = map(result.get("payment"));
 		if (term.isEmpty())
 			issues.add("请选择整单付款方式");
@@ -655,7 +822,7 @@ public final class InstallationPricingEngine {
 				Object lineTotal = !blank(row.get("amount")) && !blank(installationAmount)
 						? text(add(n(row.get("amount")), n(installationAmount))) : null;
 				row.putAll(obj("installation_status", status, "installation_reason", line.get("reason"),
-						"installation_amount", installationAmount, "line_total", lineTotal));
+						"installation_amount", installationAmount, "installation_detail", line, "line_total", lineTotal));
 			}
 		}
 		BigDecimal total = null, before = null, payment = null, difference = null;
@@ -673,7 +840,9 @@ public final class InstallationPricingEngine {
 		}
 		var equipmentFreight = map(map(result.get("fees")).get("equipment_freight"));
 		result.putAll(obj("total", text(total), "before_payment_total", text(before), "payment_amount", text(payment),
-				"equipment_freight_total", blank(equipmentFreight.get("amount")) ? null : equipmentFreight.get("amount"),
+				"equipment_freight_total", equipmentFreight.isEmpty()
+						&& calculatedRows.stream().anyMatch(r -> s(r, "status").equals("installation_only")) ? "0"
+						: blank(equipmentFreight.get("amount")) ? null : equipmentFreight.get("amount"),
 				"rounding_difference", text(difference), "installation_engine_version", VERSION, "formal_ready",
 				issues.isEmpty()));
 		return result;

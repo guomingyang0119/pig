@@ -28,6 +28,33 @@ public final class EquipmentFanSelector {
 	private record Choice(Map<String, Object> point, Cost cost) {
 	}
 
+	/** 只在一次整单计算内复用查表结果；每个候选仍独立算成本并保留原有缺价/重复判断。 */
+	static final class CostLookup {
+		private record MotorKey(Object powers, Object poles, String model) { }
+		private final Map<String, Object> catalog;
+		private final Map<List<String>, List<Map<String, Object>>> bodies = new HashMap<>();
+		private final Map<MotorKey, List<Map<String, Object>>> motors = new HashMap<>();
+
+		CostLookup(Map<String, Object> catalog) { this.catalog = catalog; }
+
+		private List<Map<String, Object>> bodies(Map<String, Object> point) {
+			return bodies.computeIfAbsent(List.of(s(point, "family"), s(point, "size")), ignored ->
+				list(catalog.get("fan_bodies")).stream()
+					.filter(x -> s(x, "family").equals(s(point, "family"))
+							&& n(x.get("size")).compareTo(n(point.get("size"))) == 0).toList());
+		}
+
+		private List<Map<String, Object>> motors(Map<String, Object> point, Map<String, Object> attrs) {
+			return motors.computeIfAbsent(new MotorKey(point.get("powers"), point.get("poles"),
+					blank(attrs.get("motor_model")) ? "" : normalize(attrs.get("motor_model"))), ignored ->
+				list(catalog.get("motors")).stream()
+					.filter(m -> sameNumbers(m.get("powers"), point.get("powers"))
+							&& sameNumbers(m.get("poles"), point.get("poles"))
+							&& (blank(attrs.get("motor_model"))
+									|| normalize(m.get("model")).equals(normalize(attrs.get("motor_model"))))).toList());
+		}
+	}
+
 	/**
 	 * 选型待确认异常，携带可供人工选择的工况；最多保留 50 项以限制返回数据量。
 	 *
@@ -85,7 +112,7 @@ public final class EquipmentFanSelector {
 	 * 读取单档或以斜线分隔的多档功率，W 除以 1000 转成 kW；按高功率到低功率排序。
 	 *
 	 */
-	private static List<BigDecimal> powers(String value) {
+	static List<BigDecimal> powers(String value) {
 		String raw = value.trim().toUpperCase(Locale.ROOT).replace("KW", "").replace("千瓦", "");
 		BigDecimal scale = raw.endsWith("W") ? n("1000") : ONE;
 		raw = raw.replaceFirst("W$", "").replace('／', '/');
@@ -126,36 +153,46 @@ public final class EquipmentFanSelector {
 	 *
 	 */
 	public static Cost cost(Map<String, Object> point, Map<String, Object> catalog, Map<String, Object> attrs) {
-		var bodies = list(catalog.get("fan_bodies")).stream()
-			.filter(x -> s(x, "family").equals(s(point, "family"))
-					&& n(x.get("size")).compareTo(n(point.get("size"))) == 0)
-			.toList();
-		if (bodies.size() != 1)
+		return cost(point, catalog, attrs, obj());
+	}
+
+	static Cost cost(Map<String, Object> point, Map<String, Object> catalog, Map<String, Object> attrs, Map<String, Object> price) {
+		return cost(point, catalog, attrs, price, new CostLookup(catalog));
+	}
+
+	private static Cost cost(Map<String, Object> point, Map<String, Object> catalog, Map<String, Object> attrs,
+			Map<String, Object> price, CostLookup lookup) {
+		boolean supplement = FanPriceSupplement.applies(price, point, catalog, attrs);
+		if (supplement && !blank(price.get("unit_cost")))
+			return new Cost(n(price.get("unit_cost")), obj("price_supplement", price, "confirmed_unit_cost", price.get("unit_cost"),
+					"explosion_included", true));
+		boolean bodySupplement = supplement && !blank(price.get("body_cost"));
+		boolean motorSupplement = supplement && !blank(price.get("motor_cost"));
+		var bodies = lookup.bodies(point);
+		if (!bodySupplement && bodies.size() != 1)
 			throw new RuleException("选定机号的本体成本公式缺失或重复");
-		var body = bodies.get(0);
+		var body = bodies.size() == 1 ? bodies.get(0) : obj("size", point.get("size"));
 		// 只有完全相同的功率与极数组合才可取电机价，人工指定的电机型号进一步限制候选。
-		var motors = list(catalog.get("motors")).stream()
-			.filter(m -> sameNumbers(m.get("powers"), point.get("powers"))
-					&& sameNumbers(m.get("poles"), point.get("poles"))
-					&& (blank(attrs.get("motor_model"))
-							|| normalize(m.get("model")).equals(normalize(attrs.get("motor_model")))))
-			.toList();
-		if (motors.isEmpty())
+		var motors = lookup.motors(point, attrs);
+		if (!motorSupplement && motors.isEmpty())
 			throw new RuleException("所选功率及极数组合缺少电机价");
-		if (motors.stream().map(m -> List.of(s(m, "model"), s(m, "cost"))).distinct().count() != 1)
+		if (!motorSupplement && motors.stream().map(m -> List.of(s(m, "model"), s(m, "cost"))).distinct().count() != 1)
 			throw new RuleException("同功率极数对应多个电机，请明确电机型号");
-		var motor = motors.get(0);
+		var motor = motorSupplement ? obj("model", price.get("motor_model"), "cost", price.get("motor_cost"),
+				"powers", point.get("powers"), "poles", point.get("poles")) : motors.get(0);
 		// 行内板厚优先于本体默认；没有板厚时公式用 1 占位，不锈钢查价仍要求真实板厚。
 		Object thickness = blank(attrs.get("thickness")) ? body.get("thickness") : attrs.get("thickness");
 		var env = obj("size", n(body.get("size")), "thickness", blank(thickness) ? ONE : n(thickness), "steel_price",
-				materialPrice(catalog, attrs.get("material"), thickness, body.get("steel_price")));
-		var metal = DecimalFormula.evaluate(s(body, "material_expression"), env);
-		var other = DecimalFormula.evaluate(s(body, "other_expression"), env);
+				bodySupplement ? ZERO : materialPrice(catalog, attrs.get("material"), thickness, body.get("steel_price")));
+		var metal = bodySupplement ? ZERO : DecimalFormula.evaluate(s(body, "material_expression"), env);
+		var other = bodySupplement ? n(price.get("body_cost")) : DecimalFormula.evaluate(s(body, "other_expression"), env);
 		if (metal.signum() < 0 || other.signum() < 0)
 			throw new RuleException("风机本体成本公式结果不能为负");
-		return new Cost(add(metal, other, n(motor.get("cost"))),
-				obj("body", body, "motor", motor, "material_cost", text(metal), "body_other_cost", text(other),
-						"motor_cost", motor.get("cost"), "steel_price", text(n(env.get("steel_price")))));
+		var detail = obj("body", body, "motor", motor, "material_cost", text(metal), "body_other_cost", text(other),
+				"motor_cost", motor.get("cost"), "steel_price", text(n(env.get("steel_price"))));
+		if (supplement) detail.put("price_supplement", price);
+		if (bodySupplement) detail.put("confirmed_body_cost", price.get("body_cost"));
+		return new Cost(add(metal, other, n(motor.get("cost"))), detail);
 	}
 
 	// 把已算出成本的候选还原为工况记录，交给工作台解释待确认原因。
@@ -188,6 +225,10 @@ public final class EquipmentFanSelector {
 	 *
 	 */
 	public static Cost select(Map<String, Object> row, Map<String, Object> catalog, Map<String, Object> attrs) {
+		return select(row, catalog, attrs, new CostLookup(catalog));
+	}
+
+	static Cost select(Map<String, Object> row, Map<String, Object> catalog, Map<String, Object> attrs, CostLookup lookup) {
 		String requested = normalize(attrs.get("model"));
 		String family = List.of("HTFC", "HTF(A)", "SWF").stream().filter(requested::startsWith).findFirst().orElse("");
 		List<BigDecimal> requestedPowers = blank(attrs.get("power")) ? List.of() : powers(s(attrs, "power"));
@@ -270,12 +311,18 @@ public final class EquipmentFanSelector {
 		if (candidates.isEmpty())
 			throw new SelectionException(lows.isEmpty() ? "没有满足风量、风压、功率及单双速要求的科庆参数，请核实需求" : "需核实双速高低档风量/风压配对数据",
 					List.of());
+		// 补价仅从已校验规则快照读取，并严格限定有效配置，保留性能筛选和人工候选核对。
+		var price = map(map(map(row.get("_product_rule_resource")).get("body")).get("fan_price"));
+		if (!price.isEmpty()) {
+			candidates.removeIf(p -> !FanPriceSupplement.applies(price, p, catalog, attrs));
+			if (candidates.isEmpty()) throw new SelectionException("已核实补价配置不满足本次风机需求，请重新核对型号、功率和工况", List.of());
+		}
 		// 性能通过后再算完整成本；缺本体公式或电机价格的工况不能成为可售候选。
 		List<Choice> eligible = new ArrayList<>();
 		Set<String> costIssues = new LinkedHashSet<>();
 		for (var p : candidates) {
 			try {
-				eligible.add(new Choice(p, cost(p, catalog, attrs)));
+				eligible.add(new Choice(p, cost(p, catalog, attrs, price, lookup)));
 			}
 			catch (RuleException e) {
 				costIssues.add(e.getMessage()); }

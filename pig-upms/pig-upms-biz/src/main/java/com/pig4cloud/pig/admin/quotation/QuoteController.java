@@ -23,10 +23,12 @@ public class QuoteController {
 
 	private final QuoteService service;
 	private final AiQuoteImportService aiImporter;
+	private final AiImportJobService aiJobs;
 
-	public QuoteController(QuoteService service, AiQuoteImportService aiImporter) {
+	public QuoteController(QuoteService service, AiQuoteImportService aiImporter, AiImportJobService aiJobs) {
 		this.service = service;
 		this.aiImporter = aiImporter;
+		this.aiJobs = aiJobs;
 	}
 
 	/**
@@ -201,10 +203,22 @@ public class QuoteController {
 	 */
 	@PostMapping("/ai-imports")
 	@HasPermission("quote_edit")
-	public R<?> aiImport(@RequestParam("files") MultipartFile[] files) {
+	public R<?> aiImport(@RequestParam(value = "files", required = false) MultipartFile[] files,
+			@RequestParam(defaultValue = "legacy") String action, @RequestParam(required = false) String jobId) {
 		QuoteService.Actor owner = actor();
+		if (action.equals("start")) return R.ok(aiJobs.start(owner, files, jobId));
+		if (action.equals("next")) return R.ok(aiJobs.next(owner, jobId));
+		if (action.equals("cancel")) return R.ok(aiJobs.cancel(owner, jobId));
+		if (!action.equals("legacy")) throw new RuleException("未知的整理操作");
 		List<Map<String, Object>> rows = aiImporter.normalize(files);
 		return R.ok(service.createAiDraft(owner, rows, AiQuoteImportService.sourceSnapshots(files)));
+	}
+
+	/** 保持原AI上传路径，查询进度与最近未完成任务，无需修改网关或部署配置。 */
+	@GetMapping("/ai-imports")
+	@HasPermission("quote_edit")
+	public R<?> aiImportStatus(@RequestParam(required = false) String jobId) {
+		return R.ok(blank(jobId) ? aiJobs.recent(actor()) : aiJobs.status(actor(), jobId));
 	}
 
 	/**
@@ -243,6 +257,15 @@ public class QuoteController {
 	@HasPermission("quote_view")
 	public R<?> list(@RequestParam(defaultValue = "false") boolean archived) {
 		return R.ok(service.listQuotes(actor(), archived));
+	}
+
+	/** 分页读取报价摘要；客户/项目搜索与账号可见范围由服务端统一处理。 */
+	@GetMapping("/quotes/page")
+	@HasPermission("quote_view")
+	public R<?> listPage(@RequestParam(defaultValue = "false") boolean archived,
+			@RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size,
+			@RequestParam(defaultValue = "") String keyword) {
+		return R.ok(service.listQuotePage(actor(), archived, page, size, keyword));
 	}
 
 	/**

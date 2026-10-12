@@ -118,6 +118,8 @@ services:
       MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      AI_REVIEW_CONFIDENCE_ENABLED: ${AI_REVIEW_CONFIDENCE_ENABLED:-true}
+      AI_REVIEW_CONFIDENCE_THRESHOLD: ${AI_REVIEW_CONFIDENCE_THRESHOLD:-95}
     depends_on:
       pig-register:
         condition: service_started

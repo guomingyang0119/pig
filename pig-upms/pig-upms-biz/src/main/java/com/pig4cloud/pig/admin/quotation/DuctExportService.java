@@ -19,7 +19,7 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 public final class DuctExportService {
 
 	// 导出版式或回导列语义变化时更新；模板指纹和校对元数据均引用此版本。
-	public static final String TEMPLATE_VERSION = "review-roundtrip-20261007-v12";
+	public static final String TEMPLATE_VERSION = "review-roundtrip-20261009-v14";
 
 	static final String REVIEW_METADATA_SHEET = "_系统回导";
 
@@ -234,6 +234,9 @@ public final class DuctExportService {
 		if (!blank(attr(copy, "thickness")))
 			copy.put("thickness", attr(copy, "thickness"));
 		copy.put("process", displayFlange(attr(copy, "flange"), s(copy, "process")));
+		String pressureSupplySize = PressureSupplyOutlet.specification(copy, obj());
+		if (pressureSupplySize != null)
+			copy.put("spec", pressureSupplySize);
 		return copy;
 	}
 
@@ -321,6 +324,9 @@ public final class DuctExportService {
 	 * 普通设备保持客户原规格，缺少文本时才由已解析尺寸和型号拼出展示值。
 	 */
 	static String equipmentSpecification(Map<String, Object> row, Map<String, Object> result) {
+		String pressureSupplySize = PressureSupplyOutlet.specification(row, result);
+		if (pressureSupplySize != null)
+			return pressureSupplySize;
 		var point = map(map(result.get("detail")).get("selected_fan"));
 		if (!point.isEmpty()) {
 			String fan = s(point, "model") + "；功率"
@@ -498,6 +504,7 @@ public final class DuctExportService {
 					return copy;
 				})
 				.toList());
+			exported = sourceScopeLines(body, result, exported, installation);
 			if (includePending)
 				appendReviewPricingLogic(body, result, exported);
 			return exported;
@@ -526,7 +533,7 @@ public final class DuctExportService {
 					var line = obj("name", source.get("name"), "thickness", thickness, "spec",
 							 equipmentSpecification(source, r), "process", displayFlange(attr(source, "flange"), "待确认"), "unit", source.get("unit"), "quantity",
 							 quantity, "material_unit", null, "material_amount", null, "installation_amount", null,
-							 "line_total", null, "remark", remark, "pending", true, "source_row_id", source.get("row_id"));
+							 "line_total", null, "remark", remark, "pending", true, "source_row_id", source.get("row_id"), "_calculation_source_index", i);
 					applyInstallation(line, installationRows.get(i), installation);
 					lines.add(line);
 				}
@@ -548,12 +555,14 @@ public final class DuctExportService {
 						remark += (remark.isEmpty() ? "" : "；") + "客户要求规格：" + requestedSpec;
 				}
 				else {
+					String purchased = PurchasedEquipment.selectedRemark(detail);
 					remark = sourceRemark + (note.isEmpty() ? "" : (!sourceRemark.isEmpty() ? "；" : "") + note);
+					if (!purchased.isEmpty()) remark = purchased + (remark.isEmpty() ? "" : "；" + remark);
 				}
 				var line = obj("name", source.get("name"), "thickness", blank(attr(source, "thickness")) ? "-" : attr(source, "thickness"), "spec", equipmentSpecification(source, r),
 						"process", displayFlange(attr(source, "flange"), "设备供货"), "unit", r.getOrDefault("billing_unit", source.get("unit")), "quantity",
 						r.get("billing_quantity"), "material_unit", r.get("unit_price"), "material_amount",
-						r.get("amount"), "remark", remark, "source_row_id", source.get("row_id"));
+						r.get("amount"), "remark", remark, "source_row_id", source.get("row_id"), "_calculation_source_index", i);
 				applyInstallation(line, installationRows.get(i), installation);
 				lines.add(line);
 				continue;
@@ -578,7 +587,7 @@ public final class DuctExportService {
 			var main = obj("name", source.get("name"), "thickness", map(r.get("selected_material")).get("thickness"),
 					"spec", specification(source), "process", flanges.get(s(r, "effective_flange")), "unit", "㎡",
 					"quantity", r.get("billing_quantity"), "material_unit", r.get("unit_price"), "material_amount",
-					r.get("body_amount"), "remark", remark, "source_row_id", source.get("row_id"));
+					r.get("body_amount"), "remark", remark, "source_row_id", source.get("row_id"), "_calculation_source_index", i);
 			applyInstallation(main, installationRows.get(i), installation);
 			lines.add(main);
 			// 按实际米数或个数另列的法兰单独导出，不能再合入面积单价重复计费。
@@ -608,9 +617,78 @@ public final class DuctExportService {
 					"_calculation_kind", "whole_quote_item", "_base_unit_price", item.get("base_unit_price"),
 					"_area_factor", item.get("area_factor"), "_tax_factor", item.get("tax_factor")), installation));
 		lines.addAll(independentInstallationLines(result, installation));
+		lines = sourceScopeLines(body, result, lines, installation);
 		if (includePending)
 			appendReviewPricingLogic(body, result, lines);
 		return lines;
+	}
+
+	/** 客户产品按原顺序保留；范围外金额始终为空，人工明细也不能覆盖已保存的报价范围。 */
+	private static List<Map<String, Object>> sourceScopeLines(Map<String, Object> body, Map<String, Object> result,
+			List<Map<String, Object>> exported, boolean installation) {
+		List<Map<String, Object>> sources = list(body.get("rows")), remaining = new ArrayList<>(), ordered = new ArrayList<>();
+		Map<String, Integer> sourceIds = new HashMap<>();
+		Map<Integer, List<Map<String, Object>>> sourceLines = new HashMap<>();
+		for (int i = 0; i < sources.size(); i++)
+			if (!s(sources.get(i), "row_id").isEmpty()) sourceIds.putIfAbsent(s(sources.get(i), "row_id"), i);
+		// 每条导出行只关联一次，保留来源行与附项原顺序；不再为每个产品扫描和删除整个剩余清单。
+		for (var line : exported) {
+			Integer index = sourceIds.get(s(line, "source_row_id"));
+			if (line.get("_calculation_source_index") != null) {
+				int calculationIndex = n(line.get("_calculation_source_index")).intValue();
+				if (calculationIndex >= 0 && calculationIndex < sources.size())
+					index = index == null ? calculationIndex : Math.min(index, calculationIndex);
+			}
+			if (index == null) remaining.add(line);
+			else sourceLines.computeIfAbsent(index, key -> new ArrayList<>()).add(line);
+		}
+		Map<Integer, Map<String, Object>> installationRows = new HashMap<>();
+		for (var line : list(map(map(result.get("fees")).get("installation")).get("lines")))
+			if (line.get("row_index") != null) installationRows.put(n(line.get("row_index")).intValue(), line);
+		for (int i = 0; i < sources.size(); i++) {
+			var source = sources.get(i);
+			String id = s(source, "row_id");
+			List<Map<String, Object>> matching = sourceLines.getOrDefault(i, List.of());
+			String scope = yes(source.get("excluded")) ? "excluded" : yes(source.get("installation_only")) ? "installation_only" : "quoted";
+			if (!scope.equals("quoted")) {
+				Map<String, Object> line = matching.stream().filter(item -> !id.isEmpty() && id.equals(s(item, "source_row_id"))).findFirst()
+						.map(LinkedHashMap::new).orElseGet(LinkedHashMap::new);
+				line.putAll(obj("name", source.get("name"), "spec", source.get("spec"), "thickness", attr(source, "thickness"),
+						"unit", source.get("unit"), "quantity", blank(source.get("engineering_quantity")) ? source.get("quantity") : source.get("engineering_quantity"),
+						"process", displayFlange(attr(source, "flange"), scope.equals("excluded") ? "不报价" : "仅安装"),
+						"material_unit", null, "material_amount", null, "source_row_id", id,
+						"scope", scope, "exclude_reason", s(source, "exclude_reason"), "sequence", sourceSequence(source, i)));
+				String scopeNote = scope.equals("excluded") ? "不在本次报价范围" + (blank(source.get("exclude_reason")) ? "" : "：" + s(source, "exclude_reason"))
+						: "仅安装；材料不在本次报价范围";
+				line.put("remark", scopeNote + (blank(source.get("remark")) ? "" : "；" + s(source, "remark")));
+				if (scope.equals("excluded"))
+					line.putAll(obj("installation_unit", null, "installation_amount", null, "line_total", null, "pending", false));
+				else {
+					line.put("pending", false);
+					if (installation && blank(line.get("installation_amount"))) applyInstallation(line, installationRows.get(i), true);
+					if (installation) {
+						line.put("installation_unit", installationUnit(line.get("installation_amount"), line.get("quantity")));
+						line.put("line_total", line.get("installation_amount"));
+					}
+				}
+				ordered.add(line);
+			}
+			else for (var line : matching) {
+				if (s(line, "_calculation_kind").isEmpty()) line.putAll(obj("scope", scope, "sequence", sourceSequence(source, i)));
+				ordered.add(line);
+			}
+		}
+		ordered.addAll(remaining);
+		return ordered;
+	}
+
+	/** 仅把来源 A 列中可确认的数字序号作为客户序号，标题、公式或其他文字回退为原产品位置。 */
+	private static String sourceSequence(Map<String, Object> source, int index) {
+		Object cells = map(source.get("original")).get("cells");
+		Object first = cells instanceof Map<?, ?> values ? values.get("A")
+				: cells instanceof List<?> values && !values.isEmpty() ? values.get(0) : null;
+		String value = str(first).trim();
+		return value.matches("[0-9]+(?:[.\\-][0-9]+)*") && value.length() <= 32 ? value : Integer.toString(index + 1);
 	}
 
 	/** 仅向校对版备注补充实际计价类别和选型信息，便于人工核对；反复导出先移除旧说明避免重复。 */
@@ -622,6 +700,7 @@ public final class DuctExportService {
 			if (!s(sources.get(i), "row_id").isEmpty())
 				sourceIndexes.put(s(sources.get(i), "row_id"), i);
 		for (Map<String, Object> line : lines) {
+			if (s(line, "scope").equals("excluded")) continue;
 			Integer index = sourceIndexes.get(s(line, "source_row_id"));
 			if (index == null && line.get("_calculation_source_index") != null)
 				index = n(line.get("_calculation_source_index")).intValue();
@@ -1016,7 +1095,7 @@ public final class DuctExportService {
 								"material_amount", "installation_unit", "installation_amount", "line_total", "remark" }
 						: new String[] { "name", "thickness", "spec", "process", "unit", "quantity", "material_unit",
 								"material_amount", "remark" };
-				cell(sheet, row, 0).setCellValue(i + 1);
+				cell(sheet, row, 0).setCellValue(blank(line.get("sequence")) ? Integer.toString(i + 1) : s(line, "sequence"));
 				for (int c = 0; c < columns; c++) {
 					Cell cell = cell(sheet, row, c);
 					if (c > 0) {
@@ -1025,7 +1104,7 @@ public final class DuctExportService {
 						if (Set
 							.of("quantity", "material_unit", "material_amount", "installation_unit", "installation_amount", "line_total")
 							.contains(key))
-							if (review && key.equals("quantity") && yes(line.get("pending"))) reviewQuantity(cell, line.get(key));
+							if (key.equals("quantity") && (review && yes(line.get("pending")) || s(line, "scope").equals("excluded"))) reviewQuantity(cell, line.get(key));
 							else number(cell, line.get(key));
 						else {
 							String text = str(line.get(key));
@@ -1052,11 +1131,11 @@ public final class DuctExportService {
 				literal(sheet, coord, "");
 			int end = 8 + detailLines.size(), summaryRow = end + 1;
 			// 材料和安装各自检查完整性，只对尚未确认的部分隐藏小计；总额在整单全部确认后展示。
-			boolean materialPending = detailLines.stream().anyMatch(line -> !Set.of("安装", "整单汇总")
+			boolean materialPending = detailLines.stream().anyMatch(line -> !Set.of("excluded", "installation_only").contains(s(line, "scope")) && !Set.of("安装", "整单汇总")
 					.contains(s(line, "process")) && (blank(line.get("material_unit")) || blank(line.get("material_amount"))));
 			var installationFee = map(map(result.get("fees")).get("installation"));
 			boolean installationPending = installation && (s(installationFee, "status").equals("pending")
-					|| detailLines.stream().anyMatch(line -> blank(line.get("installation_amount"))));
+					|| detailLines.stream().anyMatch(line -> !s(line, "scope").equals("excluded") && blank(line.get("installation_amount"))));
 			Object displayedTotal = materialPending || installationPending
 					|| equipmentFreightLine != null && yes(equipmentFreightLine.get("pending")) ? null : result.get("total");
 			if (equipmentFreightLine != null) {
@@ -1165,7 +1244,7 @@ public final class DuctExportService {
 		}
 		String[] headers = { "visible_row", "line_key", "source_row_id", "was_pending", "name", "thickness",
 				"spec", "process", "unit", "quantity", "material_unit", "material_amount", "installation_amount",
-				"line_total", "remark" };
+				"line_total", "remark", "scope", "exclude_reason" };
 		for (int i = 0; i < headers.length; i++)
 			cell(metadata, 9, i).setCellValue(headers[i]);
 		String[] fields = { "name", "thickness", "spec", "process", "unit", "quantity", "material_unit",
@@ -1178,6 +1257,8 @@ public final class DuctExportService {
 			cell(metadata, row, 1).setCellValue(sourceRowId.isEmpty() ? "line-" + (i + 1) : sourceRowId);
 			cell(metadata, row, 2).setCellValue(sourceRowId);
 			cell(metadata, row, 3).setCellValue(yes(line.get("pending")));
+			cell(metadata, row, 15).setCellValue(s(line, "scope").isEmpty() ? "quoted" : s(line, "scope"));
+			cell(metadata, row, 16).setCellValue(s(line, "exclude_reason"));
 			for (int j = 0; j < fields.length; j++) {
 				String value = s(line, fields[j]);
 				if (!value.isEmpty())

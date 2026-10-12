@@ -31,6 +31,12 @@ final class QuoteReviewImportService {
 	 * 区分人工修改和自动补算字段，保留未补全行；材料、设备运费及安装分别汇总，设备运费已含在单价时不重复加总。
 	 */
 	Map<String, Object> read(byte[] bytes, String filename, String expectedQuoteId, int expectedRevision) {
+		return read(bytes, filename, expectedQuoteId, expectedRevision, Map.of());
+	}
+
+	/** 服务端正文中的范围优先于工作簿元数据，也覆盖没有范围列的历史校对文件。 */
+	Map<String, Object> read(byte[] bytes, String filename, String expectedQuoteId, int expectedRevision,
+			Map<String, String> sourceScopes) {
 		if (filename == null || !filename.toLowerCase(Locale.ROOT).endsWith(".xlsx"))
 			throw new RuleException("请上传系统导出的xlsx校对版");
 		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
@@ -47,7 +53,7 @@ final class QuoteReviewImportService {
 			if (workbookRevision != expectedRevision)
 				throw new RuleException("报价单在校对版导出后已有修改，请重新导出校对版");
 			// 只兼容明确列出的回导版本，未知模板需重新导出，避免把金额按错误列位解释。
-			if (!Set.of(DuctExportService.TEMPLATE_VERSION, "review-roundtrip-20261006-v11", "review-roundtrip-20261006-v10", "review-roundtrip-20260930-v9")
+			if (!Set.of(DuctExportService.TEMPLATE_VERSION, "review-roundtrip-20261009-v13", "review-roundtrip-20261007-v12", "review-roundtrip-20261006-v11", "review-roundtrip-20261006-v10", "review-roundtrip-20260930-v9")
 					.contains(properties.get("template_version")))
 				throw new RuleException("校对版模板已更新，请重新导出后填写");
 			int columns = integer(properties.get("column_count"), "校对版列数");
@@ -56,7 +62,7 @@ final class QuoteReviewImportService {
 			Sheet visible = wb.getSheet(properties.get("visible_sheet"));
 			if (visible == null)
 				throw new RuleException("校对版工作表已被删除或改名");
-			List<Map<String, Object>> lines = new ArrayList<>(), changes = new ArrayList<>();
+			List<Map<String, Object>> lines = new ArrayList<>(), changes = new ArrayList<>(), restorations = new ArrayList<>();
 			BigDecimal materialTotal = ZERO, equipmentFreightTotal = ZERO, installationTotal = ZERO;
 			boolean equipmentFreightIncluded = false;
 			int pending = 0, manualChanges = 0, derivedChanges = 0, changedRows = 0;
@@ -80,11 +86,21 @@ final class QuoteReviewImportService {
 				current.putAll(obj("visible_row", visibleRow, "line_key", cellText(metaRow.getCell(1), evaluator),
 						"source_row_id", cellText(metaRow.getCell(2), evaluator), "was_pending",
 						booleanValue(metaRow.getCell(3), evaluator)));
+				String scope = sourceScopes.getOrDefault(s(current, "source_row_id"), cellText(metaRow.getCell(15), evaluator));
+				if (scope.isEmpty()) scope = "quoted";
+				if (!Set.of("quoted", "excluded", "installation_only").contains(scope)) throw new RuleException("校对版报价范围无法识别");
+				current.putAll(obj("scope", scope, "exclude_reason", cellText(metaRow.getCell(16), evaluator)));
+				baseline.put("scope", scope);
 				normalizeNumbers(baseline, visibleRow);
 				normalizeNumbers(current, visibleRow);
+				boolean restore = scope.equals("excluded") && (List.of("material_unit", "material_amount", "installation_amount", "line_total").stream().anyMatch(key -> !blank(current.get(key)))
+						|| columns == 13 && !blank(cellText(source.getCell(9), evaluator)))
+						|| scope.equals("installation_only") && (!blank(current.get("material_unit")) || !blank(current.get("material_amount")));
 				// 原待确认行或已有金额的行仍需检查完整性，未计价说明行不要求凭空补价。
 				boolean required = yes(current.get("was_pending")) || !blank(baseline.get("material_amount"))
 						|| !blank(baseline.get("installation_amount"));
+				if (scope.equals("excluded")) required = restore;
+				else if (scope.equals("installation_only")) required = columns != 10 || restore;
 				Set<String> derivedFields = new LinkedHashSet<>();
 				boolean complete = complete(current, visibleRow, required, columns != 10, derivedFields);
 				if (equipmentFreightSummary) {
@@ -136,13 +152,23 @@ final class QuoteReviewImportService {
 				current.putAll(obj("sequence", visibleRow - 9, "pending", required && !complete, "changed", changed,
 						"price_changed", priceChanged, "before_values", baseline, "changes", rowChanges, "derived_fields",
 						new ArrayList<>(derivedFields)));
+				if (restore) {
+					Map<String, Object> candidate = obj();
+					for (String field : List.of("quantity", "material_unit", "material_amount", "installation_amount", "line_total")) candidate.put(field, current.get(field));
+					if (columns == 13) candidate.put("installation_unit", cellText(source.getCell(9), evaluator));
+					current.putAll(obj("scope_restore_required", true, "candidate_values", candidate));
+					var restoration = obj("source_row_id", s(current, "source_row_id"), "name", s(current, "name"), "previous_scope", scope,
+							"visible_row", visibleRow, "candidate_values", candidate);
+					restoration.putAll(candidate);
+					restorations.add(restoration);
+				}
 				if (required && !complete)
 					pending++;
-				if (s(current, "process").equals("设备运费"))
+				if (scope.equals("quoted") && s(current, "process").equals("设备运费"))
 					equipmentFreightTotal = add(equipmentFreightTotal, amount(current.get("material_amount")));
-				else
+				else if (scope.equals("quoted"))
 					materialTotal = add(materialTotal, amount(current.get("material_amount")));
-				installationTotal = add(installationTotal, amount(current.get("installation_amount")));
+				if (!scope.equals("excluded")) installationTotal = add(installationTotal, amount(current.get("installation_amount")));
 				lines.add(current);
 			}
 			if (lines.isEmpty())
@@ -153,7 +179,7 @@ final class QuoteReviewImportService {
 					installationTotal);
 			return obj("type", "review_import_v1", "quote_id", expectedQuoteId, "workbook_revision", workbookRevision,
 					"template_version", properties.get("template_version"), "column_count", columns, "lines", lines,
-					"changes", changes, "change_count", manualChanges, "derived_count", derivedChanges,
+					"changes", changes, "scope_restorations", restorations, "change_count", manualChanges, "derived_count", derivedChanges,
 					"changed_row_count", changedRows, "unchanged_count", unchanged,
 					"line_count", lines.size(), "pending_count", pending, "material_total", text(materialTotal),
 					"equipment_freight_total", text(equipmentFreightTotal),
@@ -167,6 +193,40 @@ final class QuoteReviewImportService {
 		catch (IOException | RuntimeException e) {
 			throw new RuleException("校对版读取失败，请确认文件未损坏且仍为xlsx格式");
 		}
+	}
+
+	/** 仅供报价服务在核对正文和逐行显式确认后调用；未获确认的范围继续排除在合计之外。 */
+	static Map<String, Object> acceptScopeRestorations(Map<String, Object> parsed, Set<String> ids) {
+		boolean installation = n(parsed.get("column_count")).intValue() != 10;
+		for (var line : list(parsed.get("lines"))) {
+			if (!yes(line.get("scope_restore_required")) || !ids.contains(s(line, "source_row_id"))) continue;
+			line.putAll(obj("scope", "quoted", "scope_restore_required", false, "exclude_reason", ""));
+			line.remove("candidate_values");
+			Set<String> derived = new LinkedHashSet<>();
+			boolean complete = complete(line, n(line.get("visible_row")).intValue(), true, installation, derived)
+					&& !blank(line.get("material_amount"));
+			line.put("pending", !complete);
+			if (Set.of("不报价", "仅安装").contains(s(line, "process"))) line.put("process", "人工确认");
+			line.put("remark", String.join("；", Arrays.stream(s(line, "remark").split("；"))
+					.filter(part -> !part.equals("仅安装") && !part.startsWith("不在本次报价范围") && !part.startsWith("材料不在本次报价范围")).toList()));
+		}
+		parsed.put("scope_restorations", list(parsed.get("scope_restorations")).stream()
+				.filter(item -> !ids.contains(s(item, "source_row_id"))).toList());
+		BigDecimal material = ZERO, freight = ZERO, installationTotal = ZERO;
+		int pending = 0, unchanged = 0;
+		for (var line : list(parsed.get("lines"))) {
+			if (yes(line.get("pending"))) pending++;
+			if (!yes(line.get("pending")) && !yes(line.get("changed"))) unchanged++;
+			if (s(line, "scope").equals("excluded")) continue;
+			installationTotal = add(installationTotal, amount(line.get("installation_amount")));
+			if (s(line, "scope").equals("installation_only")) continue;
+			if (s(line, "process").equals("设备运费")) freight = add(freight, amount(line.get("material_amount")));
+			else material = add(material, amount(line.get("material_amount")));
+		}
+		String total = text(add(material, installationTotal, yes(parsed.get("equipment_freight_included")) ? ZERO : freight));
+		parsed.putAll(obj("pending_count", pending, "unchanged_count", unchanged, "material_total", text(material), "equipment_freight_total", text(freight),
+				"installation_total", text(installationTotal), "before_payment_total", total, "subtotal", total));
+		return parsed;
 	}
 
 	/** 人工金额补齐后移除已解决的待确认提示和内部校对逻辑行，同时保留客户正常备注。 */
@@ -246,6 +306,11 @@ final class QuoteReviewImportService {
 		for (String key : List.of("quantity", "material_unit", "material_amount", "installation_amount",
 				"line_total")) {
 			String value = s(line, key);
+			if (key.equals("quantity") && s(line, "scope").equals("excluded")) {
+				try { line.put(key, value.isEmpty() ? "" : decimal(value, "数量").stripTrailingZeros().toPlainString()); }
+				catch (RuleException ignored) { /* 范围外行保留客户原数量文字。 */ }
+				continue;
+			}
 			line.put(key,
 					value.isEmpty() ? "" : decimal(value, "第" + row + "行" + LABELS.get(key)).stripTrailingZeros().toPlainString());
 		}

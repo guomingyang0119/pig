@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.*;
 import java.io.*;
 import java.math.BigDecimal;
+import java.math.MathContext;
+import java.math.RoundingMode;
 import java.util.*;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
@@ -33,22 +35,23 @@ class EquipmentPricingEngineTests {
 	}
 
 	@Test
-	void panelExpressionKeepsValveBodyDimensionsEvenWhenAiSuppliesTheTotalHeight() throws IOException {
+	void smokeOutletPanelExpressionUsesTheSameOverallHeightAsPressureSupply() throws IOException {
 		Map<String, Object> catalog = new ObjectMapper()
 				.readValue(DuctExportService.asset("equipment-catalog-seed.json"), Map.class);
 		var parsed = EquipmentPricingEngine.parseAttributes(obj("name", "多叶排烟口", "spec", "800×(1000+250)",
 				"attributes", obj("width", "800", "height", "1250")));
-		assertEquals("1000", parsed.get("height"));
+		assertEquals("1250", parsed.get("height"));
 		assertEquals("250", parsed.get("panel_height"));
 		assertEquals("1250", parsed.get("overall_height"));
 		var actual = EquipmentPricingEngine.valveCost("multi_leaf", parsed, catalog);
-		var expected = EquipmentPricingEngine.valveCost("multi_leaf", obj("width", "800", "height", "1000"), catalog);
+		var expected = EquipmentPricingEngine.valveCost("multi_leaf", EquipmentPricingEngine.parseAttributes(
+				obj("name", "正压送风口", "spec", "800×1250", "attributes", obj())), catalog);
 		assertEquals(0, expected.amount().compareTo(actual.amount()));
 		assertEquals(false, actual.detail().get("split"));
 		assertEquals("4", actual.detail().get("blades"));
 		assertEquals("800", actual.detail().get("body_width"));
-		assertEquals("1000", actual.detail().get("body_height"));
-		assertEquals("1060", actual.detail().get("panel_outer_height"));
+		assertEquals("1250", actual.detail().get("body_height"));
+		assertEquals("1310", actual.detail().get("panel_outer_height"));
 	}
 
 	@Test
@@ -141,6 +144,73 @@ class EquipmentPricingEngineTests {
 		assertEquals("purchased", EquipmentPricingEngine.classify(obj("name", "吸顶式排气扇", "attributes", obj())));
 	}
 
+	/** 阀门的联锁控制说明不能把本行主产品改成被控制的风机。 */
+	@Test
+	void valveControlDescriptionsDoNotBecomeFanProducts() {
+		String valve = "280℃排烟防火阀常开\n远距离手动复位;熔断关闭后输出电信号联锁关闭排烟风机(及补风机);消控室显示启闭状态";
+		assertEquals("fire", EquipmentPricingEngine.classify(obj("name", valve, "spec", "1250×630", "attributes", obj())));
+		assertEquals("fire", EquipmentPricingEngine.classify(obj("name", "280℃排烟防火阀常开\n手动复位;消控室显示启闭状态", "attributes", obj())));
+		assertEquals("fire", EquipmentPricingEngine.classify(obj("name", "防火阀", "spec", "800×500，联锁关闭SWF-I-7排烟风机", "attributes", obj())));
+	}
+
+	/** 风机控制柜是独立外购产品，真正的含阀风机仍使用风机本体分类。 */
+	@Test
+	void fanControlCabinetsAndFansWithAttachedValvesHaveDifferentMainProducts() {
+		assertEquals("purchased", EquipmentPricingEngine.classify(obj("name", "排风风机控制柜", "attributes", obj())));
+		assertEquals("purchased", EquipmentPricingEngine.classify(obj("name", "排烟风机控制箱", "attributes", obj())));
+		assertEquals("fan", EquipmentPricingEngine.classify(obj("name", "轴流风机（带70°防火阀）", "attributes", obj())));
+		assertEquals("fan", EquipmentPricingEngine.classify(obj("name", "防爆轴流风机（带防火阀）", "attributes", obj())));
+		assertEquals("plenum", EquipmentPricingEngine.classify(obj("name", "消声静压箱", "attributes", obj())));
+	}
+
+	/** 自动原文识别忽略 AI 类别和解释字段，人工明确选择仍由正式分类入口优先采用。 */
+	@Test
+	void sourceClassificationDoesNotTrustAiSuggestionsOrExplanatoryFields() {
+		var row = obj("name", "280℃排烟防火阀常开\n熔断关闭后联锁关闭排烟风机", "spec", "1250×630",
+				"main_product_name", "排烟风机", "control_description", "风机", "attached_components_description", "风机",
+				"equipment_kind", "fan", "equipment_kind_source", "ai", "attributes", obj("equipment_kind", "fan"));
+		assertEquals("fire", EquipmentPricingEngine.classifySource(row));
+		assertEquals("fan", EquipmentPricingEngine.classify(row));
+		assertEquals("", EquipmentPricingEngine.classifySource(obj("name", "待识别材料", "main_product_name", "防火阀",
+				"control_description", "关闭排烟风机", "attached_components_description", "轴流风机")));
+	}
+
+	/** 未知行业主产品不能借用括号内或分段后的附件类型。 */
+	@Test
+	void sourceClassificationDoesNotUseAttachmentsForUnknownMainProducts() {
+		for (String name : List.of("稳压箱（配百叶）", "稳压箱(带防火阀)", "稳压箱；附带轴流风机"))
+			assertEquals("", EquipmentPricingEngine.classifySource(obj("name", name)), name);
+	}
+
+	/** 前置的明确带阀描述属于附件，后面的风机仍是本行主产品。 */
+	@Test
+	void leadingValveAttachmentDescriptionsKeepTheFanMainProduct() {
+		for (String name : List.of("带70℃防火阀轴流风机", "（带防火阀）轴流风机"))
+			assertEquals("fan", EquipmentPricingEngine.classifySource(obj("name", name)), name);
+	}
+
+	/** 前置带控制开关是百叶本体的修饰，剩余文本不构成另一主产品时不能剥离。 */
+	@Test
+	void leadingAttachmentPrefixDoesNotRemoveTheEntireLouverProduct() {
+		assertEquals("louver", EquipmentPricingEngine.classifySource(obj("name", "带控制开关百叶风口")));
+	}
+
+	/** 仅写带防火阀仍保留阀门主语，不能把整个名称视为另一设备的附件删除。 */
+	@Test
+	void leadingAttachmentPrefixDoesNotRemoveTheEntireValveProduct() {
+		assertEquals("fire", EquipmentPricingEngine.classifySource(obj("name", "带70℃防火阀")));
+		assertEquals("fire", EquipmentPricingEngine.classifySource(obj("name", "带70℃防火阀800×500")));
+	}
+
+	/** 型号后备只用本体型号资料，不能从联锁对象或附件说明中拾取风机型号。 */
+	@Test
+	void modelFallbackDoesNotUseControlOrAttachmentDescriptions() {
+		assertEquals("", EquipmentPricingEngine.classifySource(obj("name", "稳压箱", "remark", "联锁关闭SWF-I-7排烟风机")));
+		assertEquals("", EquipmentPricingEngine.classifySource(obj("name", "稳压箱", "spec", "800×500；联锁关闭SWF-I-7排烟风机")));
+		assertEquals("", EquipmentPricingEngine.classifySource(obj("name", "稳压箱", "spec", "800×500（配SWF-I-7风机）")));
+		assertEquals("fan", EquipmentPricingEngine.classifySource(obj("name", "PF-3-2", "spec", "SWF-I-7 风量27500 风压700")));
+	}
+
 	/**
 	 * 自垂百叶保留实际类型，但采用已确认的单层百叶材料成本口径。
 	 *
@@ -172,7 +242,7 @@ class EquipmentPricingEngineTests {
 		assertTrue(n(detail.get("remote_extra")).signum() > 0);
 		assertEquals(0, n(map(detail.get("components")).get("mechanism"))
 				.compareTo(add(n(detail.get("mechanism_base")), n(detail.get("remote_extra")))));
-		assertEquals(s(detail, "mechanism_base") + " + " + s(detail, "remote_extra"),
+		assertEquals("(" + s(detail, "mechanism_base") + " + " + s(detail, "remote_extra") + ") × 1",
 				s(map(detail.get("component_formulas")), "mechanism"));
 	}
 
@@ -261,9 +331,12 @@ class EquipmentPricingEngineTests {
 			var engine = new EquipmentPricingEngine();
 			var q = map(c.get("quote"));
 			var resources = list(map(fixture.get("catalogs")).get(s(c, "resources_key")));
+			var expected = new LinkedHashMap<>(map(c.get("expected")));
+			applyConfirmedValveMechanisms(q, resources, expected);
 			var result = s(q, "pricing_mode").equals("mixed_v1") ? engine.mixed(q, resources, map(c.get("policy")))
 					: engine.calculate(q, resources, map(c.get("policy")));
-			var expected = new LinkedHashMap<>(map(c.get("expected")));
+			if (s(c, "name").equals("parse-正压送风口"))
+				applyConfirmedPressureSupplyCost(expected);
 			allowDetailedFrozenCostReason(list(expected.get("rows")), list(result.get("rows")));
 			if (s(q, "pricing_mode").equals("mixed_v1"))
 				compareMixed(expected, result, q);
@@ -276,6 +349,117 @@ class EquipmentPricingEngineTests {
 				compare(expected, result, "result");
 			}
 		}));
+	}
+
+	/**
+	 * 2026-10-09 已确认机构规则对旧 Python 基准的独立转换。结构成本仍逐项使用冻结值：
+	 * 防火阀及板式口 N=ceil(长边/2000)+ceil(短边/1000)-1，远控每机构加 40；
+	 * 板式口仍用原结构公式，不再将旧分组标记解释成结构拆分。本基准没有全自动用例。
+	 * 只在预期侧计算，既不调用生产成本/分数工具，也不读取本次实际结果。
+	 */
+	private static void applyConfirmedValveMechanisms(Map<String, Object> quote,
+			List<Map<String, Object>> resources, Map<String, Object> expected) {
+		var inputs = list(quote.get("rows"));
+		var rows = list(expected.get("rows"));
+		boolean converted = false;
+		for (int i = 0; i < inputs.size(); i++) {
+			var input = inputs.get(i);
+			String kind = s(map(input.get("attributes")), "equipment_kind");
+			if (kind.isEmpty() && s(input, "name").contains("板式排烟口")) kind = "plate_smoke";
+			if (kind.isEmpty() && s(input, "name").equals("防火阀")) kind = "fire";
+			if (!Set.of("fire", "electric_fire", "plate_smoke").contains(kind)) continue;
+			var row = rows.get(i);
+			if (!s(row, "status").equals("priced")) continue;
+			// 明确限制在当前冻结矩阵；若以后加入运费/安装/混合用例，应先独立扩展预期算法。
+			assertEquals("equipment_v1", quote.get("pricing_mode"));
+			assertEquals(1, inputs.size());
+			var options = map(quote.get("equipment_options"));
+			assertEquals(false, options.get("include_freight"));
+			assertEquals("not_applicable", map(map(expected.get("fees")).get("installation")).get("status"));
+			var catalog = resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog"))
+				.map(r -> map(r.get("body"))).findFirst().orElseThrow();
+			var rates = map(catalog.get("rates"));
+			var attributes = map(row.get("attributes"));
+			BigDecimal width = frozenDecimal(attributes.get("width")), height = frozenDecimal(attributes.get("height"));
+			BigDecimal count = width.max(height).divide(new BigDecimal("2000"), 0, RoundingMode.CEILING)
+				.add(width.min(height).divide(new BigDecimal("1000"), 0, RoundingMode.CEILING)).subtract(BigDecimal.ONE);
+			String control = s(map(input.get("attributes")), "control");
+			if (control.isEmpty()) control = s(input, "name").contains("远控") ? "remote" : "near";
+			assertTrue(Set.of("near", "remote").contains(control), "frozen control needs an independent expectation");
+			BigDecimal base = frozenDecimal(kind.equals("plate_smoke") ? rates.get("near_control")
+					: map(map(catalog.get("valves")).get(kind)).get("mechanism"));
+			assertFalse(map(input.get("attributes")).containsKey("mechanism_cost"));
+			BigDecimal mechanism = base.add(control.equals("remote") ? new BigDecimal("40") : BigDecimal.ZERO).multiply(count);
+			var detail = map(row.get("detail"));
+			var components = map(detail.get("components"));
+			components.put("mechanism", mechanism.toPlainString());
+			if (kind.equals("plate_smoke")) detail.putAll(obj("split", false, "groups", "1"));
+			if (s(input, "name").equals("远控板式排烟口"))
+				attributes.putAll(obj("remote", true, "control", "remote"));
+			BigDecimal cost = components.values().stream().map(EquipmentPricingEngineTests::frozenDecimal)
+				.reduce(BigDecimal.ZERO, BigDecimal::add);
+			BigDecimal denominator = BigDecimal.ONE.subtract(frozenDecimal(rates.get("gross_margin")));
+			BigDecimal numerator = cost;
+			if (Boolean.TRUE.equals(options.get("tax_included"))) numerator = numerator.multiply(frozenDecimal(rates.get("tax_factor")));
+			if (s(attributes, "shape").equals("round")) numerator = numerator.multiply(frozenDecimal(rates.get("round_factor")));
+			BigDecimal quantity = frozenDecimal(input.get("quantity"));
+			BigDecimal unit = numerator.divide(denominator, 0, RoundingMode.CEILING);
+			BigDecimal amount = unit.multiply(quantity).setScale(0, RoundingMode.CEILING);
+			// 乘税/外形/数量先在分子精确完成，最后才除分母展示，避免循环小数连乘误差。
+			String supply = frozenQuotient(numerator, denominator);
+			row.putAll(obj("unit_cost", cost.toPlainString(), "supply_unit_unrounded", supply,
+					"supply_amount_unrounded", frozenQuotient(numerator.multiply(quantity), denominator),
+					"unit_price", unit.toPlainString(), "amount", amount.toPlainString(), "body_amount", amount.toPlainString()));
+			var traceValues = obj("不含税成本", cost.toPlainString(), "不含税供货价", frozenQuotient(cost, denominator),
+					"付款前供货价", supply, "设备运费", "0", "设备单价", unit.toPlainString(), "设备行金额", amount.toPlainString());
+			assertEquals(traceValues.size(), list(row.get("trace")).size());
+			for (var trace : list(row.get("trace"))) {
+				assertTrue(traceValues.containsKey(s(trace, "step")), "unexpected frozen trace step");
+				trace.put("value", traceValues.get(s(trace, "step")));
+			}
+			converted = true;
+		}
+		if (!converted) return;
+		BigDecimal subtotal = rows.stream().filter(r -> s(r, "status").equals("priced"))
+			.map(r -> frozenDecimal(r.get("amount"))).reduce(BigDecimal.ZERO, BigDecimal::add);
+		for (String key : List.of("subtotal", "material_total", "equipment_material_total", "before_payment_total"))
+			expected.put(key, subtotal.toPlainString());
+		map(map(expected.get("fees")).get("equipment_freight")).put("equipment_subtotal", subtotal.toPlainString());
+		BigDecimal paymentTotal = subtotal.multiply(frozenDecimal(map(expected.get("payment")).get("coefficient")));
+		BigDecimal total = paymentTotal.setScale(0, RoundingMode.CEILING);
+		expected.putAll(obj("total", total.toPlainString(), "payment_amount", paymentTotal.subtract(subtotal).toPlainString(),
+				"rounding_difference", total.subtract(paymentTotal).toPlainString()));
+	}
+
+	private static BigDecimal frozenDecimal(Object value) {
+		return new BigDecimal(Objects.requireNonNull(value).toString());
+	}
+
+	private static String frozenQuotient(BigDecimal numerator, BigDecimal denominator) {
+		return numerator.divide(denominator, new MathContext(48, RoundingMode.HALF_EVEN)).toPlainString();
+	}
+
+	/**
+	 * 仅此正压口用例改为用户此次确认的源表规则：整体高 2050、大尺寸成本、70 元/㎡面板。
+	 * 数值由源表逐项独立核算，冻结 Python 文件及其余用例保持原样，不从实际结果生成预期。
+	 */
+	private static void applyConfirmedPressureSupplyCost(Map<String, Object> expected) {
+		var row = list(expected.get("rows")).get(0);
+		row.putAll(obj("unit_cost", "200.440906083", "supply_unit_unrounded", "267.254541444",
+				"supply_amount_unrounded", "534.509082888", "unit_price", "268", "amount", "536", "body_amount", "536"));
+		map(row.get("attributes")).put("height", "2050");
+		map(map(row.get("detail")).get("components")).putAll(obj("multi_frame", "54.5771250",
+				"multi_blade", "14.838394833", "labor", "31", "link", "1.0975475", "shaft", "6.6",
+				"consumables", "4.5875", "multi_brace", "5.63787", "multi_back", "1.54546875",
+				"mechanism", "20", "splice", "0", "panel", "60.557"));
+		var trace = list(row.get("trace"));
+		var values = List.of("200.440906083", "267.254541444", "267.254541444", "0", "268", "536");
+		assertEquals(values.size(), trace.size());
+		for (int i = 0; i < values.size(); i++)
+			trace.get(i).put("value", values.get(i));
+		for (String field : List.of("subtotal", "material_total", "equipment_material_total", "total", "before_payment_total"))
+			expected.put(field, "536");
+		map(map(expected.get("fees")).get("equipment_freight")).put("equipment_subtotal", "536");
 	}
 
 	// 只兼容这个旧缺成本提示增加的两个已知原因，其余原因、待确认状态及所有金额仍逐项核对。
@@ -303,10 +487,11 @@ class EquipmentPricingEngineTests {
 			Map<String, Object> quote) {
 		// 风管 Java 明细已采用中文界面措辞，这里核对金额等业务输出；设备行继续逐项比较完整结果。
 		for (String key : List.of("subtotal", "total", "before_payment_total", "payment_amount", "rounding_difference",
-				"installation_engine_version", "pending_count", "formal_ready", "duct_engine_version",
+				"installation_engine_version", "pending_count", "formal_ready",
 				"accessory_items", "aggregate_flanges"))
 			compare(expected.get(key), actual.get(key), "result." + key);
 		assertEquals(EquipmentPricingEngine.MIXED_VERSION, actual.get("engine_version"));
+		assertEquals(DuctPricingEngine.VERSION, actual.get("duct_engine_version"));
 		assertEquals(((List<?>) expected.get("issues")).size(), ((List<?>) actual.get("issues")).size(), "issue count");
 		List<Map<String, Object>> erows = list(expected.get("rows")), arows = list(actual.get("rows")),
 				inputs = list(quote.get("rows"));
@@ -331,6 +516,11 @@ class EquipmentPricingEngineTests {
 
 	// 递归比较金额、状态和明细；数值用 BigDecimal 比较，忽略表示上的尾零差异。
 	static void compare(Object expected, Object actual, String path) {
+		if ((path.endsWith(".installation_engine_version") || path.endsWith(".engine_version"))
+				&& str(expected).startsWith("installation-v")) {
+			assertEquals(InstallationPricingEngine.VERSION, actual, path);
+			return;
+		}
 		if (expected instanceof Map<?, ?> values) {
 			assertInstanceOf(Map.class, actual, path);
 			values.forEach((k, v) -> compare(v, ((Map<?, ?>) actual).get(k), path + "." + k));

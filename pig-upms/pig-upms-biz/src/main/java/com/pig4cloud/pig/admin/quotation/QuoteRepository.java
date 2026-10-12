@@ -3,9 +3,15 @@ package com.pig4cloud.pig.admin.quotation;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 import java.util.*;
+import java.util.function.Supplier;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 
 /**
@@ -23,9 +29,24 @@ public class QuoteRepository {
 
 	private final ObjectMapper json;
 
+	private final TransactionTemplate exportTransaction;
+
 	public QuoteRepository(@Qualifier("quotationJdbcTemplate") JdbcTemplate jdbc, ObjectMapper json) {
+		this(jdbc, json, new DataSourceTransactionManager(Objects.requireNonNull(jdbc.getDataSource())));
+	}
+
+	@Autowired
+	public QuoteRepository(@Qualifier("quotationJdbcTemplate") JdbcTemplate jdbc, ObjectMapper json,
+			@Qualifier("quotationTransactionManager") PlatformTransactionManager manager) {
 		this.jdbc = jdbc;
 		this.json = json;
+		this.exportTransaction = new TransactionTemplate(manager);
+		this.exportTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+	}
+
+	/** 导出只在取得快照及保存文件时使用独立短事务，文件生成期间不占用数据库行锁。 */
+	public <T> T exportTransaction(Supplier<T> action) {
+		return exportTransaction.execute(status -> action.get());
 	}
 
 	/**

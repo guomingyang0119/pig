@@ -1,5 +1,6 @@
 package com.pig4cloud.pig.admin.quotation;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.*;
 import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
@@ -63,6 +64,15 @@ public final class EquipmentCatalog {
 	 */
 	private static void validateBody(Map<String, Object> b) {
 		Map<String, Object> rates = map(b.get("rates"));
+		// 两个钢号允许暂空以继续服务其他产品；旧未分钢号价格仅保留历史，不参与新报价。
+		for (String grade : List.of("201", "304"))
+			if (!blank(rates.get("fire_150_" + grade + "_steel"))) fire150Price(rates, grade);
+		for (String key : List.of("pressure_supply_split_height", "pressure_supply_mechanism_width"))
+			if (rates.containsKey(key)) positive(rates.get(key), "正压送风口指标 " + key);
+		for (String key : List.of("pressure_supply_panel_rate", "pressure_supply_mechanism"))
+			if (rates.containsKey(key)) nonnegative(rates.get(key), "正压送风口指标 " + key);
+		for (String key : List.of("valve_remote_extra", "fire_auto_extra"))
+			if (rates.containsKey(key)) nonnegative(rates.get(key), "机构附加指标 " + key);
 		for (String key : RATES)
 			if (n(rates.get(key)).signum() < 0)
 				throw new RuleException("设备指标不能为负：" + key);
@@ -93,6 +103,9 @@ public final class EquipmentCatalog {
 		for (String key : EXPRESSIONS)
 			if (!VARIABLES.containsAll(DecimalFormula.variables(s(map(b.get("valve_expressions")), key))))
 				throw new RuleException("阀体成本公式包含未定义变量：" + key);
+		if (map(b.get("valve_expressions")).containsKey("pressure_supply_link")
+				&& !VARIABLES.containsAll(DecimalFormula.variables(s(map(b.get("valve_expressions")), "pressure_supply_link"))))
+			throw new RuleException("正压送风口连杆公式包含未定义变量");
 		for (String key : VALVES)
 			for (String field : List.of("mechanism", "blade_thickness", "labor_base"))
 				if (n(map(map(b.get("valves")).get(key)).get(field)).signum() < 0)
@@ -148,9 +161,11 @@ public final class EquipmentCatalog {
 			checkNumbers(row.get("powers"), "电机功率或极数不正确");
 			checkNumbers(row.get("poles"), "电机功率或极数不正确");
 		}
-		for (Map<String, Object> row : list(b.get("purchased")))
-			if (n(row.get("cost")).signum() < 0 || blank(row.get("model")))
+		for (Map<String, Object> row : list(b.get("purchased"))) {
+			PurchasedEquipment.validatePrice(row);
+			if (blank(row.get("model")))
 				throw new RuleException("外购设备基础价不完整");
+		}
 		// 防爆档位按成本上限递增，末档不设上限；实际计算时上限包含本数。
 		List<Map<String, Object>> tiers = list(b.get("explosion_tiers"));
 		if (tiers.isEmpty() || tiers.get(tiers.size() - 1).get("limit") != null)
@@ -165,6 +180,15 @@ public final class EquipmentCatalog {
 				last = n(row.get("limit"));
 			}
 		}
+	}
+
+	/** 报价时所选钢号必须已有有效专用价，不借用旧单价、另一钢号或通用材料价格。 */
+	static BigDecimal fire150Price(Map<String, Object> rates, String grade) {
+		String label = "150°防火阀" + grade + "不锈钢专用材料吨价";
+		Object value = rates.get("fire_150_" + grade + "_steel");
+		if (blank(value)) throw new RuleException("缺少" + label + "，请在材料与配件价格中填写并发布");
+		try { return positive(value, label); }
+		catch (RuleException e) { throw new RuleException(label + "必须为有效的正数，请在材料与配件价格中填写并发布"); }
 	}
 
 	// 功率和极数必须是非空正数列表，供单双速风机与电机组合精确匹配。

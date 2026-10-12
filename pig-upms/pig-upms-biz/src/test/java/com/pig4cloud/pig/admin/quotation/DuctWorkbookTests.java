@@ -130,9 +130,10 @@ class DuctWorkbookTests {
 			Sheet details = wb.getSheet("计算明细");
 			assertNotNull(details);
 			assertTrue(details.getRow(0).getCell(0).getStringCellValue().startsWith("镀锌风管"));
-			assertTrue(details.getRow(1).getCell(0).getStringCellValue().startsWith("铁皮材料价/㎡："),
-					"产品名称下一行应直接列出代入数字的算式");
-			assertFalse(details.getRow(1).getCell(0).getStringCellValue().contains("镀锌风管"));
+			assertEquals("材料计算明细", details.getRow(1).getCell(0).getStringCellValue());
+			assertTrue(details.getRow(2).getCell(0).getStringCellValue().startsWith("铁皮材料价/㎡："),
+					"材料分区标题下一行应直接列出代入数字的算式");
+			assertFalse(details.getRow(2).getCell(0).getStringCellValue().contains("镀锌风管"));
 			StringBuilder text = new StringBuilder();
 			for (Row row : details)
 				for (Cell cell : row)
@@ -147,6 +148,7 @@ class DuctWorkbookTests {
 					"独立圆法兰行应写明按实际直径计算的单价");
 			assertTrue(text.toString().contains("按客户清单中的实际数量另列"));
 			assertTrue(text.toString().contains("安装人工"));
+			assertTrue(text.toString().contains("安装计算明细"));
 			assertTrue(text.toString().contains("向上取整(0.03 × 1.01)"));
 			assertTrue(text.toString().contains("本行报价"));
 			assertTrue(text.toString().contains("付款系数"));

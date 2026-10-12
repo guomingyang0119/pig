@@ -13,6 +13,68 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class AutoImportTests {
 
+	@Test
+	void automaticStandardWorkbookRoundtripPreservesRecognitionExplanationAndConflict() throws Exception {
+		var source = obj("name", "防火阀", "spec", "500×400", "unit", "个", "quantity", "2", "equipment_kind", "fire",
+				"main_product_name", "防火阀", "control_description", "联锁关闭排烟风机", "attached_components_description", "远控机构",
+				"equipment_kind_source", "rule", "recognition_issue", "请核验主产品识别");
+		var importer = new DuctImportService();
+		var workbook = importer.read(AiQuoteImportService.standardWorkbook(List.of(source)), "AI核对清单.xlsx");
+		var row = list(importer.buildWorkbook(workbook, null).get("rows")).get(0);
+		for (String field : List.of("main_product_name", "control_description", "attached_components_description", "equipment_kind_source", "recognition_issue"))
+			assertEquals(source.get(field), attr(row, field), field);
+		assertTrue(yes(row.get("source_issue")));
+		assertTrue(s(row, "source_issue_reason").contains("请核验主产品识别"));
+	}
+
+	@Test
+	void normalizedRecognitionFieldsRemainSeparateFromPriceAndAttachedValveInputs() {
+		var source = obj("name", "规范清单", "rows", List.of(obj("number", 1,
+				"cells", List.of("防火阀", "500×400", "个", "2", "防火阀", "联锁关闭排烟风机", "远控机构", "ai", "类型待核验"), "issues", List.of())));
+		var mapping = obj("name", 0, "spec", 1, "unit", 2, "quantity", 3, "main_product_name", 4,
+				"control_description", 5, "attached_components_description", 6, "equipment_kind_source", 7, "recognition_issue", 8);
+		var row = list(new DuctImportService().build(source, 1, mapping, "mixed_v1").get("rows")).get(0);
+		var attributes = map(row.get("attributes"));
+		assertEquals("防火阀", attributes.get("main_product_name"));
+		assertEquals("联锁关闭排烟风机", attributes.get("control_description"));
+		assertEquals("远控机构", attributes.get("attached_components_description"));
+		assertEquals("ai", attributes.get("equipment_kind_source"));
+		assertEquals("类型待核验", attributes.get("recognition_issue"));
+		assertFalse(attributes.containsKey("fan_set_cost"));
+		assertFalse(attributes.containsKey("attached_valve_kind"));
+		assertTrue(s(row, "source_issue_reason").contains("类型待核验"));
+	}
+
+	@Test
+	void refreshingAutomaticTypeRepairsClearSourceConflictButPreservesManualAndLegacyRows() {
+		String source = "280℃排烟防火阀常开\n远距离手动复位;熔断关闭后输出电信号联锁关闭排烟风机(及补风机)";
+		for (String origin : List.of("ai", "rule", "manual", "")) {
+			var row = obj("name", source, "spec", "800×400", "category", "风机", "candidate_id", "",
+					"attributes", obj("equipment_kind", "fan", "equipment_kind_source", origin));
+			DuctImportService.refreshAutomaticClassification(row);
+			boolean automatic = Set.of("ai", "rule").contains(origin);
+			assertEquals(automatic ? "fire" : "fan", attr(row, "equipment_kind"), origin);
+			assertEquals(automatic ? "风阀" : "风机", row.get("category"), origin);
+			assertEquals(automatic, !blank(attr(row, "recognition_issue")), origin);
+		}
+	}
+
+	@Test
+	void refreshingAutomaticTypePreservesConfirmedCandidateCostAndProductRules() {
+		for (String manual : List.of("candidate", "set_cost", "row_rule", "rule_family", "manual_price")) {
+			var row = obj("name", "防火阀联锁关闭排烟风机", "spec", "800×400", "category", "风机",
+					"attributes", obj("equipment_kind", "fan", "equipment_kind_source", "ai"));
+			if (manual.equals("candidate")) row.put("candidate_id", "selected-fan");
+			if (manual.equals("set_cost")) map(row.get("attributes")).put("fan_set_cost", "500");
+			if (manual.equals("row_rule")) row.put("product_rule", obj("canonical_name", "人工规则"));
+			if (manual.equals("rule_family")) row.put("product_rule_family", "custom-family");
+			if (manual.equals("manual_price")) row.put("pricing_mode", "manual_v1");
+			DuctImportService.refreshAutomaticClassification(row);
+			assertEquals("fan", attr(row, "equipment_kind"), manual);
+			assertEquals("风机", row.get("category"), manual);
+		}
+	}
+
 	/** 客户项目特征按字段拆分，厚度和法兰不堆进规格，原文继续可追溯。 */
 	@Test
 	void projectDescriptionSeparatesThicknessFlangeAndNotes() {

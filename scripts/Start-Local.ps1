@@ -1,8 +1,8 @@
-﻿# 报价系统本机启动入口：按依赖顺序启动Redis、注册中心、业务服务、认证、网关和报价页面。
+﻿# 报价系统本机启动入口：按依赖顺序启动Redis、注册中心、业务服务、开发平台、认证、网关和报价页面。
 # -Service可只启动指定组件，-Build先重新打包；进程标识和日志保存在work/local中。
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'redis', 'register', 'admin', 'auth', 'gateway', 'ui')]
+    [ValidateSet('all', 'redis', 'register', 'admin', 'codegen', 'auth', 'gateway', 'ui')]
     [string]$Service = 'all',
     [switch]$Build
 )
@@ -128,11 +128,11 @@ function Start-LocalService([string]$Name, [int]$Port, [string]$Executable, [str
     throw "$Name has not opened port $Port yet. Check $logDirectory/$Name.out.log"
 }
 
-# 构建包含报价业务所在upms模块及启动依赖，只打包，此处不执行自动化测试。
+# 构建包含报价业务所在upms模块、开发平台及启动依赖，只打包，此处不执行自动化测试。
 if ($Build) {
     Push-Location $projectRoot
     try {
-        & mvn -B -ntp -pl pig-register,pig-gateway,pig-auth,pig-upms/pig-upms-biz -am package '-DskipTests' '-Ddocker.skip=true'
+        & mvn -B -ntp -pl pig-register,pig-gateway,pig-auth,pig-upms/pig-upms-biz,pig-visual/pig-codegen -am package '-DskipTests' '-Ddocker.skip=true'
         if ($LASTEXITCODE -ne 0) { throw 'Maven build failed' }
     } finally { Pop-Location }
 }
@@ -160,10 +160,11 @@ if ($Service -in @('all','redis')) {
     Start-LocalService 'redis' 6379 $redisExecutable @('--bind','127.0.0.1','--port','6379','--protected-mode','yes','--appendonly','yes','--save','60','1') $redisDirectory @{}
 }
 
-# 服务按注册中心→报价业务→认证→网关启动，每项健康后再启动下一项。
+# 服务按注册中心→报价业务→开发平台→认证→网关启动，每项健康后再启动下一项。
 $services = @(
     @{ Name='register'; Port=8848; Jar='pig-register/target/pig-register.jar' },
     @{ Name='admin'; Port=4000; Jar='pig-upms/pig-upms-biz/target/pig-upms-biz.jar' },
+    @{ Name='codegen'; Port=5003; Jar='pig-visual/pig-codegen/target/pig-codegen.jar' },
     @{ Name='auth'; Port=3000; Jar='pig-auth/target/pig-auth.jar' },
     @{ Name='gateway'; Port=9999; Jar='pig-gateway/target/pig-gateway.jar' }
 )
