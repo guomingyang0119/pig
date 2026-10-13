@@ -91,6 +91,7 @@ public final class DuctImportService {
 					if (columns > MAX_COLUMNS)
 						throw new RuleException("工作表有效数据范围超过80列，请保留需要导入的列或拆分清单");
 					Map<Long, Cell> merged = new HashMap<>();
+					Map<Integer, Integer> headerEnds = new HashMap<>();
 					for (CellRangeAddress range : sheet.getMergedRegions()) {
 						if (range.getLastRow() >= MAX_ROWS)
 							throw new RuleException("合并单元格超出导入范围");
@@ -101,6 +102,17 @@ public final class DuctImportService {
 						Cell cell = first == null ? null : first.getCell(range.getFirstColumn());
 						if (!hasContent(cell))
 							continue;
+						String label = header(value(cell));
+						Row last = sheet.getRow(range.getLastRow());
+						boolean leafHeader = false;
+						if (last != null) for (Cell leaf : last)
+							if (Set.of("单位", "计量单位", "数量", "设备数量", "产品数量", "材料数量", "工程量", "总面积", "清单总量")
+								.contains(header(value(leaf)))) leafHeader = true;
+						// 名称跨行合并且末层有单位/数量表头时，整组只用末层识别，避免把工程量总标题当数据列。
+						if (range.getFirstColumn() == range.getLastColumn() && leafHeader
+								&& (HEADERS.get("name").contains(label) || label.equals("设备名称")))
+							for (int r = range.getFirstRow(); r < range.getLastRow(); r++)
+								headerEnds.merge(r + 1, range.getLastRow() + 1, Math::max);
 						for (int r = range.getFirstRow(); r <= range.getLastRow(); r++)
 							for (int c = range.getFirstColumn(); c <= Math.min(range.getLastColumn(), columns - 1); c++)
 								merged.put((long) r * MAX_COLUMNS + c, cell);
@@ -125,6 +137,7 @@ public final class DuctImportService {
 						}
 						if (cells.stream().anyMatch(v -> !v.isBlank())) {
 							var parsedRow = obj("number", r + 1, "cells", cells, "issues", issues);
+							if (headerEnds.containsKey(r + 1)) parsedRow.put("header_end_row", headerEnds.get(r + 1));
 							if (!originalCells.equals(cells)) parsedRow.put("original_cells", originalCells);
 							rows.add(parsedRow);
 						}
@@ -299,7 +312,8 @@ public final class DuctImportService {
 	 */
 	public Map<String, Object> suggest(Map<String, Object> sheet) {
 		List<Map<String, Object>> candidates = new ArrayList<>();
-		for (Map<String, Object> row : list(sheet.get("rows")).stream().limit(20).toList()) {
+		for (Map<String, Object> row : list(sheet.get("rows")).stream().limit(20)
+				.filter(row -> blank(row.get("header_end_row"))).toList()) {
 			Map<String, Object> found = new LinkedHashMap<>();
 			List<Object> cells = cells(row);
 			HEADERS.forEach((key, names) -> {
@@ -418,7 +432,8 @@ public final class DuctImportService {
 		SOURCE_HEADERS.forEach((key, label) -> headers.put(key, Set.of(label)));
 		headers.put("ai_confidence", Set.of("AI置信度元数据"));
 		List<Map<String, Object>> candidates = new ArrayList<>();
-		for (var row : list(sheet.get("rows")).stream().limit(30).toList()) {
+		for (var row : list(sheet.get("rows")).stream().limit(30)
+				.filter(row -> blank(row.get("header_end_row"))).toList()) {
 			Map<String, Object> mapping = obj();
 			List<Object> normalized = cells(row).stream()
 				.map(v -> (Object) str(v).replace(" ", "").replace('（', '(').replace('）', ')'))
@@ -444,6 +459,10 @@ public final class DuctImportService {
 	 * 共用数量/工程量列只映射一次，按单位由逐行分类分派；明确的楼层及说明行另外列出。
 	 */
 	public Map<String, Object> suggestAuto(Map<String, Object> sheet) {
+		// 多个独立合并表头仍需人工选择，不能因名称别名不同而只采用风管或设备的一方建议。
+		if (list(sheet.get("rows")).stream().limit(30).map(row -> row.get("header_end_row"))
+				.filter(Objects::nonNull).distinct().count() > 1)
+			return obj("auto_mapping", obj(), "auto_start_row", null, "auto_context_rows", List.of());
 		var duct = suggest(sheet);
 		var equipment = suggestEquipment(sheet);
 		var mappings = List.of(map(duct.get("suggested_mapping")), map(equipment.get("equipment_mapping")));
@@ -521,7 +540,7 @@ public final class DuctImportService {
 		if (name.isEmpty()) return "note_or_total";
 		if (text.startsWith("说明") || name.matches("人工[+＋]材料[（(].*[）)][:：]?"))
 			return "note_or_total";
-		if (name.matches("-?\\d+(?:\\.\\d+)?米层|[一二三四五六七八九十百\\d]+层|\\d+(?:#|号)?(?:栋|幢|楼)|(?:风管|设备|风阀|风口)部分|.+(?:装置楼|泵房|机房|小间)"
+		if (name.matches("-?\\d+(?:\\.\\d+)?米层|[一二三四五六七八九十百\\d]+层|[一二三四五六七八九十百\\d]+[~～至-][一二三四五六七八九十百\\d]+层|屋顶层|\\d+(?:#|号)?(?:栋|幢|楼)|(?:风管|设备|风阀|风口)部分|.+(?:装置楼|泵房|机房|小间)"
 				+ "|(?:\\d+(?:#|号)?[、,，])+\\d+(?:#|号)?(?:栋|幢|楼)(?:地下室)?"
 				+ "|\\d+#楼(?:地下室(?:负?[一二三四五六七八九十百\\d]+层)?|(?:[一二三四五六七八九十百\\d]+层)?[~～至-](?:屋顶|楼顶))"))
 			return "section";

@@ -212,11 +212,11 @@ class EquipmentPricingEngineTests {
 	}
 
 	/**
-	 * 自垂百叶保留实际类型，但采用已确认的单层百叶材料成本口径。
+	 * 自垂百叶沿用普通百叶的面积公式，读取独立成本指标。
 	 *
 	 */
 	@Test
-	void selfClosingLouverUsesThePlainLouverMaterialFormula() throws IOException {
+	void selfClosingLouverUsesItsOwnRateInThePlainLouverMaterialFormula() throws IOException {
 		Map<String, Object> catalog = new ObjectMapper()
 			.readValue(DuctExportService.asset("equipment-catalog-seed.json"), Map.class);
 		var dimensions = obj("width", "400", "height", "400");
@@ -224,9 +224,10 @@ class EquipmentPricingEngineTests {
 				dimensions, catalog);
 		var gravity = EquipmentPricingEngine.areaCost("louver", obj("name", "自垂百叶风口", "spec", "400×400"),
 				dimensions, catalog);
-		assertEquals(0, plain.amount().compareTo(gravity.amount()));
+		assertEquals(0, plain.amount().compareTo(n("14.812")));
+		assertEquals(0, gravity.amount().compareTo(n("16.928")));
 		assertEquals("gravity", gravity.detail().get("louver_type"));
-		assertEquals("single", gravity.detail().get("pricing_louver_type"));
+		assertEquals("gravity", gravity.detail().get("pricing_louver_type"));
 	}
 
 	/**
@@ -326,13 +327,16 @@ class EquipmentPricingEngineTests {
 			.requireNonNull(getClass().getResourceAsStream("/quotation/equipment-installation-v1-golden.json.gz")))) {
 			fixture = new ObjectMapper().readValue(in, Map.class);
 		}
-		return list(fixture.get("cases")).stream()
+		var cases = list(fixture.get("cases"));
+		return cases.stream()
 			.map(c -> DynamicTest.dynamicTest(s(c, "name"), () -> {
 			var engine = new EquipmentPricingEngine();
 			var q = map(c.get("quote"));
 			var resources = list(map(fixture.get("catalogs")).get(s(c, "resources_key")));
-			var expected = new LinkedHashMap<>(map(c.get("expected")));
+			var expected = frozenExpectedWithConfirmedSplice(c, cases);
 			applyConfirmedValveMechanisms(q, resources, expected);
+			applyConfirmedValveSplices(q, resources, expected);
+			applyIndependentGravityIndicator(q, resources, expected);
 			var result = s(q, "pricing_mode").equals("mixed_v1") ? engine.mixed(q, resources, map(c.get("policy")))
 					: engine.calculate(q, resources, map(c.get("policy")));
 			if (s(c, "name").equals("parse-正压送风口"))
@@ -396,30 +400,114 @@ class EquipmentPricingEngineTests {
 			if (kind.equals("plate_smoke")) detail.putAll(obj("split", false, "groups", "1"));
 			if (s(input, "name").equals("远控板式排烟口"))
 				attributes.putAll(obj("remote", true, "control", "remote"));
-			BigDecimal cost = components.values().stream().map(EquipmentPricingEngineTests::frozenDecimal)
-				.reduce(BigDecimal.ZERO, BigDecimal::add);
-			BigDecimal denominator = BigDecimal.ONE.subtract(frozenDecimal(rates.get("gross_margin")));
-			BigDecimal numerator = cost;
-			if (Boolean.TRUE.equals(options.get("tax_included"))) numerator = numerator.multiply(frozenDecimal(rates.get("tax_factor")));
-			if (s(attributes, "shape").equals("round")) numerator = numerator.multiply(frozenDecimal(rates.get("round_factor")));
-			BigDecimal quantity = frozenDecimal(input.get("quantity"));
-			BigDecimal unit = numerator.divide(denominator, 0, RoundingMode.CEILING);
-			BigDecimal amount = unit.multiply(quantity).setScale(0, RoundingMode.CEILING);
-			// 乘税/外形/数量先在分子精确完成，最后才除分母展示，避免循环小数连乘误差。
-			String supply = frozenQuotient(numerator, denominator);
-			row.putAll(obj("unit_cost", cost.toPlainString(), "supply_unit_unrounded", supply,
-					"supply_amount_unrounded", frozenQuotient(numerator.multiply(quantity), denominator),
-					"unit_price", unit.toPlainString(), "amount", amount.toPlainString(), "body_amount", amount.toPlainString()));
-			var traceValues = obj("不含税成本", cost.toPlainString(), "不含税供货价", frozenQuotient(cost, denominator),
-					"付款前供货价", supply, "设备运费", "0", "设备单价", unit.toPlainString(), "设备行金额", amount.toPlainString());
-			assertEquals(traceValues.size(), list(row.get("trace")).size());
-			for (var trace : list(row.get("trace"))) {
-				assertTrue(traceValues.containsKey(s(trace, "step")), "unexpected frozen trace step");
-				trace.put("value", traceValues.get(s(trace, "step")));
-			}
+			updateFrozenValvePrice(quote, rates, row);
 			converted = true;
 		}
-		if (!converted) return;
+		if (converted) updateFrozenEquipmentTotal(expected);
+	}
+
+	/**
+	 * 旧双边超限 pending 用例以冻结文件中唯一同源、仅多填 66 元拼接费的 priced 用例
+	 * 补回结构成本。逐项核验输入、资源和政策相同，随后独立应用已确认的新机构及拼接规则。
+	 * 深拷贝保证不会把前一个用例转换后的预期再次当作冻结结构依据。
+	 */
+	private static Map<String, Object> frozenExpectedWithConfirmedSplice(Map<String, Object> testCase,
+			List<Map<String, Object>> cases) {
+		var mapper = new ObjectMapper();
+		Map<String, Object> expected = mapper.convertValue(testCase.get("expected"), Map.class);
+		var rows = list(expected.get("rows"));
+		if (rows.size() != 1 || !s(rows.get(0), "reason")
+			.equals("宽超过2000且高超过1000，请报价人员确认拼接费用")) return expected;
+		var quote = map(testCase.get("quote"));
+		assertEquals("equipment_v1", quote.get("pricing_mode"));
+		assertEquals(1, list(quote.get("rows")).size());
+		assertFalse(map(list(quote.get("rows")).get(0).get("attributes")).containsKey("splice_cost"));
+		var siblings = cases.stream().filter(c -> s(c, "name").startsWith("splice-confirmed-"))
+			.filter(c -> Objects.equals(testCase.get("resources_key"), c.get("resources_key"))
+				&& Objects.equals(testCase.get("policy"), c.get("policy")))
+			.filter(c -> {
+				Map<String, Object> siblingQuote = mapper.convertValue(c.get("quote"), Map.class);
+				var inputs = list(siblingQuote.get("rows"));
+				if (inputs.size() != 1) return false;
+				var attrs = map(inputs.get(0).get("attributes"));
+				if (!"66".equals(attrs.remove("splice_cost"))) return false;
+				return quote.equals(siblingQuote);
+			}).toList();
+		assertEquals(1, siblings.size(), "pending splice case requires one independent frozen priced sibling");
+		expected = mapper.convertValue(siblings.get(0).get("expected"), Map.class);
+		assertEquals("priced", list(expected.get("rows")).get(0).get("status"));
+		map(list(expected.get("rows")).get(0).get("attributes")).remove("splice_cost");
+		return expected;
+	}
+
+	/**
+	 * 2026-10-12 已确认拼接规则的独立预期：宽、高分别按各自目录阈值分段，
+	 * 每边次数为 ceil(尺寸/阈值)-1，两边相加乘原产品拼接费率；旧人工总额不再参与。
+	 * 只替换拼接组成项，其余结构、机构金额沿用冻结依据及上面的独立机构转换。
+	 */
+	private static void applyConfirmedValveSplices(Map<String, Object> quote,
+			List<Map<String, Object>> resources, Map<String, Object> expected) {
+		var catalog = resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog"))
+			.map(r -> map(r.get("body"))).findFirst().orElse(null);
+		if (catalog == null) return;
+		var rates = map(catalog.get("rates"));
+		boolean converted = false;
+		for (var row : list(expected.get("rows"))) {
+			String kind = s(row, "equipment_kind");
+			if (!s(row, "status").equals("priced")
+				|| !Set.of("fire", "electric_fire", "electric_control", "manual", "pressure_relief").contains(kind)) continue;
+			var attrs = map(row.get("attributes"));
+			BigDecimal widthCount = frozenDecimal(attrs.get("width"))
+				.divide(frozenDecimal(rates.get("splice_width")), 0, RoundingMode.CEILING)
+				.subtract(BigDecimal.ONE).max(BigDecimal.ZERO);
+			BigDecimal heightCount = frozenDecimal(attrs.get("height"))
+				.divide(frozenDecimal(rates.get("splice_height")), 0, RoundingMode.CEILING)
+				.subtract(BigDecimal.ONE).max(BigDecimal.ZERO);
+			BigDecimal splice = widthCount.add(heightCount)
+				.multiply(frozenDecimal(rates.get(kind.equals("manual") ? "manual_splice" : "fire_splice")));
+			var components = map(map(row.get("detail")).get("components"));
+			if (splice.compareTo(frozenDecimal(components.get("splice"))) == 0) continue;
+			components.put("splice", splice.toPlainString());
+			updateFrozenValvePrice(quote, rates, row);
+			converted = true;
+		}
+		if (converted) updateFrozenEquipmentTotal(expected);
+	}
+
+	private static void updateFrozenValvePrice(Map<String, Object> quote, Map<String, Object> rates,
+			Map<String, Object> row) {
+		assertEquals("equipment_v1", quote.get("pricing_mode"));
+		assertEquals(1, list(quote.get("rows")).size());
+		var input = list(quote.get("rows")).get(0);
+		var options = map(quote.get("equipment_options"));
+		assertEquals(false, options.get("include_freight"));
+		var attributes = map(row.get("attributes"));
+		var components = map(map(row.get("detail")).get("components"));
+		BigDecimal cost = components.values().stream().map(EquipmentPricingEngineTests::frozenDecimal)
+			.reduce(BigDecimal.ZERO, BigDecimal::add);
+		BigDecimal denominator = BigDecimal.ONE.subtract(frozenDecimal(rates.get("gross_margin")));
+		BigDecimal numerator = cost;
+		if (Boolean.TRUE.equals(options.get("tax_included"))) numerator = numerator.multiply(frozenDecimal(rates.get("tax_factor")));
+		if (s(attributes, "shape").equals("round")) numerator = numerator.multiply(frozenDecimal(rates.get("round_factor")));
+		BigDecimal quantity = frozenDecimal(input.get("quantity"));
+		BigDecimal unit = numerator.divide(denominator, 0, RoundingMode.CEILING);
+		BigDecimal amount = unit.multiply(quantity).setScale(0, RoundingMode.CEILING);
+		// 乘税/外形/数量先在分子精确完成，最后才除分母展示，避免循环小数连乘误差。
+		String supply = frozenQuotient(numerator, denominator);
+		row.putAll(obj("unit_cost", cost.toPlainString(), "supply_unit_unrounded", supply,
+				"supply_amount_unrounded", frozenQuotient(numerator.multiply(quantity), denominator),
+				"unit_price", unit.toPlainString(), "amount", amount.toPlainString(), "body_amount", amount.toPlainString()));
+		var traceValues = obj("不含税成本", cost.toPlainString(), "不含税供货价", frozenQuotient(cost, denominator),
+				"付款前供货价", supply, "设备运费", "0", "设备单价", unit.toPlainString(), "设备行金额", amount.toPlainString());
+		assertEquals(traceValues.size(), list(row.get("trace")).size());
+		for (var trace : list(row.get("trace"))) {
+			assertTrue(traceValues.containsKey(s(trace, "step")), "unexpected frozen trace step");
+			trace.put("value", traceValues.get(s(trace, "step")));
+		}
+	}
+
+	private static void updateFrozenEquipmentTotal(Map<String, Object> expected) {
+		var rows = list(expected.get("rows"));
 		BigDecimal subtotal = rows.stream().filter(r -> s(r, "status").equals("priced"))
 			.map(r -> frozenDecimal(r.get("amount"))).reduce(BigDecimal.ZERO, BigDecimal::add);
 		for (String key : List.of("subtotal", "material_total", "equipment_material_total", "before_payment_total"))
@@ -429,6 +517,45 @@ class EquipmentPricingEngineTests {
 		BigDecimal total = paymentTotal.setScale(0, RoundingMode.CEILING);
 		expected.putAll(obj("total", total.toPlainString(), "payment_amount", paymentTotal.subtract(subtotal).toPlainString(),
 				"rounding_difference", total.subtract(paymentTotal).toPlainString()));
+	}
+
+	/** 自垂由借用单层指标改为独立取价，只转换冻结矩阵中的四个普通自垂用例。 */
+	private static void applyIndependentGravityIndicator(Map<String, Object> quote,
+			List<Map<String, Object>> resources, Map<String, Object> expected) {
+		var rows = list(expected.get("rows"));
+		if (rows.size() != 1 || !s(map(rows.get(0).get("detail")), "louver_type").equals("gravity")) return;
+		assertEquals("equipment_v1", quote.get("pricing_mode"));
+		var row = rows.get(0);
+		var detail = map(row.get("detail"));
+		var catalog = resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog"))
+			.map(r -> map(r.get("body"))).findFirst().orElseThrow();
+		var values = (List<?>) map(catalog.get("louvers")).get("gravity");
+		var rates = map(catalog.get("rates"));
+		var options = map(quote.get("equipment_options"));
+		assertEquals(false, options.get("include_freight"));
+		assertEquals("not_applicable", map(map(expected.get("fees")).get("installation")).get("status"));
+		BigDecimal cost = frozenDecimal(detail.get("area")).multiply(frozenDecimal(values.get(0)))
+			.multiply(frozenDecimal(values.get(3))).max(frozenDecimal(values.get(1)));
+		BigDecimal denominator = BigDecimal.ONE.subtract(frozenDecimal(rates.get("gross_margin")));
+		BigDecimal numerator = Boolean.TRUE.equals(options.get("tax_included")) ? cost.multiply(frozenDecimal(rates.get("tax_factor"))) : cost;
+		BigDecimal quantity = frozenDecimal(list(quote.get("rows")).get(0).get("quantity"));
+		BigDecimal unit = numerator.divide(denominator, 0, RoundingMode.CEILING);
+		BigDecimal amount = unit.multiply(quantity).setScale(0, RoundingMode.CEILING);
+		String supply = frozenQuotient(numerator, denominator);
+		detail.put("pricing_louver_type", "gravity");
+		row.putAll(obj("unit_cost", cost.toPlainString(), "supply_unit_unrounded", supply,
+			"supply_amount_unrounded", frozenQuotient(numerator.multiply(quantity), denominator),
+			"unit_price", unit.toPlainString(), "amount", amount.toPlainString(), "body_amount", amount.toPlainString()));
+		var traceValues = List.of(cost.toPlainString(), frozenQuotient(cost, denominator), supply, "0", unit.toPlainString(), amount.toPlainString());
+		var trace = list(row.get("trace"));
+		assertEquals(traceValues.size(), trace.size());
+		for (int i = 0; i < trace.size(); i++) trace.get(i).put("value", traceValues.get(i));
+		for (String key : List.of("subtotal", "material_total", "equipment_material_total", "before_payment_total")) expected.put(key, amount.toPlainString());
+		map(map(expected.get("fees")).get("equipment_freight")).put("equipment_subtotal", amount.toPlainString());
+		BigDecimal paymentTotal = amount.multiply(frozenDecimal(map(expected.get("payment")).get("coefficient")));
+		BigDecimal total = paymentTotal.setScale(0, RoundingMode.CEILING);
+		expected.putAll(obj("total", total.toPlainString(), "payment_amount", paymentTotal.subtract(amount).toPlainString(),
+			"rounding_difference", total.subtract(paymentTotal).toPlainString()));
 	}
 
 	private static BigDecimal frozenDecimal(Object value) {

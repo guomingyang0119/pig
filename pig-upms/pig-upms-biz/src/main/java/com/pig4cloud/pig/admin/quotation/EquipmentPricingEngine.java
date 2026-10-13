@@ -17,7 +17,7 @@ import com.pig4cloud.pig.admin.quotation.EquipmentFanSelector.Cost;
 public final class EquipmentPricingEngine {
 
 	// 纯设备及混合报价分别记录引擎版本，供正式导出检查试算是否仍适用。
-	public static final String VERSION = "equipment-v22", MIXED_VERSION = "mixed-v22";
+	public static final String VERSION = "equipment-v24", MIXED_VERSION = "mixed-v24";
 
 	// 内置设备计算类型；组合和全新公式产品另通过产品规则进入 custom 成本分支。
 	public static final Set<String> KINDS = Set.of("fan", "fire", "electric_fire", "electric_control", "manual",
@@ -47,6 +47,11 @@ public final class EquipmentPricingEngine {
 	// 设备单价及行金额均向上取整到整数元，不采用风管的 1 位小数规则。
 	private static BigDecimal ceil(BigDecimal a) {
 		return a.setScale(0, RoundingMode.CEILING);
+	}
+
+	/** 按固定宽、高方向分段；整倍数尺寸不增加下一段，N 段只计 N-1 次拼接。 */
+	static BigDecimal spliceCount(BigDecimal size, BigDecimal segmentSize) {
+		return size.divide(positive(segmentSize, "拼接分段长度"), 0, RoundingMode.CEILING).subtract(ONE).max(ZERO);
 	}
 
 	// 将十进制值无损转成分数，保留毛利/税费计算的精确边界。
@@ -454,18 +459,16 @@ public final class EquipmentPricingEngine {
 			mechanism = add(mechanism, remoteExtra);
 		}
 		parts.put("mechanism", mechanism);
-		// 仅适用类型才计拼接；宽高同时超阈值必须人工确认费用，单边超阈值按指标取费，止回阀不加拼接。
-		BigDecimal splice = ZERO;
+		// 两个方向分别按分段数减1计拼接，再乘对应产品的每次成本；不再采用历史人工拼接费。
+		BigDecimal splice = ZERO, widthSplices = ZERO, heightSplices = ZERO, spliceRate = ZERO;
+		BigDecimal spliceWidth = null, spliceHeight = null;
 		if (Set.of("fire", "electric_fire", "electric_control", "manual").contains(kind)) {
-			boolean overW = w.compareTo(rate(rates, "splice_width")) > 0,
-					overH = h.compareTo(rate(rates, "splice_height")) > 0;
-			if (overW && overH) {
-				if (blank(a.get("splice_cost")))
-					throw new RuleException("宽超过2000且高超过1000，请报价人员确认拼接费用");
-				splice = n(a.get("splice_cost"));
-			}
-			else if (overW || overH)
-				splice = rate(rates, kind.equals("manual") ? "manual_splice" : "fire_splice");
+			spliceWidth = rate(rates, "splice_width");
+			spliceHeight = rate(rates, "splice_height");
+			widthSplices = spliceCount(w, spliceWidth);
+			heightSplices = spliceCount(h, spliceHeight);
+			spliceRate = rate(rates, kind.equals("manual") ? "manual_splice" : "fire_splice");
+			splice = mul(add(widthSplices, heightSplices), spliceRate);
 		}
 		parts.put("splice", splice);
 		BigDecimal panelRate = pressureSupply ? pressureSupplyRate(rates, "pressure_supply_panel_rate", "70") : rate(rates, "panel_rate");
@@ -496,13 +499,18 @@ public final class EquipmentPricingEngine {
 		componentFormulas.put("mechanism", perMechanism
 				? "(" + text(mechanismBase) + " + " + text(add(remoteExtra, autoExtra)) + ") × " + text(mechanismCount)
 				: text(mechanismBase) + " + " + text(remoteExtra));
-		componentFormulas.put("splice", text(splice));
+		componentFormulas.put("splice", spliceWidth == null ? "0" : "(" + text(widthSplices) + "（宽" + text(w)
+				+ "÷" + text(spliceWidth) + "，向上取整后减1） + " + text(heightSplices) + "（高" + text(h)
+				+ "÷" + text(spliceHeight) + "，向上取整后减1）) × " + text(spliceRate));
 		if (parts.containsKey("panel"))
 			componentFormulas.put("panel", "(" + text(w) + " + " + s(rates, "panel_edge") + ") × ("
 					+ text(h) + " + " + s(rates, "panel_edge") + ") × " + text(panelRate) + " ÷ 1000000");
 		return new Cost(parts.values().stream().reduce(ZERO, QuoteData::add), obj("components", components, "split",
 				split, "groups", text(groups), "blades", text(blades), "price_proxy", proxy ? "对应规格防火阀" : null,
 				"component_inputs", env, "component_formulas", componentFormulas,
+				"splice_width_count", text(widthSplices), "splice_height_count", text(heightSplices),
+				"splice_width", spliceWidth == null ? null : text(spliceWidth), "splice_height", spliceHeight == null ? null : text(spliceHeight),
+				"splice_rate", text(spliceRate),
 				"body_width", text(w), "body_height", text(h), "panel_height", a.get("panel_height"),
 				"overall_height", a.get("overall_height"), "dimension_expression", a.get("dimension_expression"),
 				"panel_outer_width", parts.containsKey("panel") ? text(add(w, rate(rates, "panel_edge"))) : null,
@@ -536,7 +544,8 @@ public final class EquipmentPricingEngine {
 			String type = louverType(row, a);
 			var recognition = EquipmentReview.louver(row, a);
 			String basis = s(recognition, "pricing_louver_type");
-			String pricingType = basis.startsWith("gravity") ? "single" + basis.substring("gravity".length()) : basis;
+			// 普通自垂百叶按独立面积成本取价；带阀组合仍沿用原单层带阀口径。
+			String pricingType = basis.equals("gravity_valve") ? "single_valve" : basis;
 			if (!map(catalog.get("louvers")).containsKey(pricingType))
 				throw new RuleException("该风口类型尚无成本依据，请核对类型");
 			// 风口配置四项依次为元/㎡成本、最低元/个成本、宽高增加 mm 值和附件倍率。
