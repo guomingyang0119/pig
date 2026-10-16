@@ -17,12 +17,10 @@ import com.pig4cloud.pig.admin.quotation.EquipmentFanSelector.Cost;
 public final class EquipmentPricingEngine {
 
 	// 纯设备及混合报价分别记录引擎版本，供正式导出检查试算是否仍适用。
-	public static final String VERSION = "equipment-v24", MIXED_VERSION = "mixed-v24";
+	public static final String VERSION = "equipment-v31", MIXED_VERSION = "mixed-v31";
 
 	// 内置设备计算类型；组合和全新公式产品另通过产品规则进入 custom 成本分支。
-	public static final Set<String> KINDS = Set.of("fan", "fire", "electric_fire", "electric_control", "manual",
-			"check", "pressure_relief", "multi_leaf", "plate_smoke", "louver", "silencer", "plenum", "elbow",
-			"purchased");
+	public static final Set<String> KINDS = ProductDefinitions.equipmentKinds();
 
 	// 尺寸与工况提取使用的非负十进制文本格式，数值范围由后续业务校验决定。
 	private static final String DECIMAL = "(\\d+(?:\\.\\d+)?)";
@@ -123,16 +121,78 @@ public final class EquipmentPricingEngine {
 		return classifySource(row);
 	}
 
+	// 分类与唯一性核验共用完整电动阀短语，结构词中的“式”不改变计算类型。
+	static final Pattern ELECTRIC_CONTROL_NAME = Pattern.compile(
+			"电动\\s*(?:(?:对开(?:式)?|多叶(?:式)?|风量)\\s*)*(?:调节(?:风)?阀|蝶阀|风量阀|阀)");
+
+	static String positiveElectricText(String text) {
+		return text.replaceAll("(?:非|无须|无需|不用|不需要|不需|不带|不含|不采用|不配|没有|无)\\s*"
+				+ "(?:电动(?:执行机构|执行器|机构)?|电控|电机驱动)", " ");
+	}
+
+	private static boolean electricControlRequired(String name) {
+		return has("电动|电控|电机驱动", positiveElectricText(name));
+	}
+
+	private static final Pattern ELECTRIC_CONTROL_DETAIL = Pattern.compile(
+			"(?:控制(?:方式|要求)|驱动方式|机构(?:方式|形式))\\s*[:：=]?\\s*(?:采用|为|是)?\\s*(?:电动|电控|电机驱动)"
+					+ "|(?:电动|电控)\\s*(?:执行机构|执行器|机构)|^\\s*(?:电动|电控|电机驱动)\\s*$");
+
+	/** 名称已明确的控制类型优先；只有普通调节阀才从本行规格或备注补充电动要求。 */
+	static boolean supplementaryElectricControl(Map<String, Object> row) {
+		String name = mainProductText(s(row, "name"));
+		if (!has("调节(?:风)?阀|蝶阀", name) || has("防火|风机|止回|余压|排烟|风口", name)
+				|| name.contains("手动") || electricControlRequired(name)) return false;
+		for (String field : List.of("spec", "remark")) {
+			String detail = positiveElectricText(s(row, field)).replaceFirst(
+					"(?s)(?:联动|联锁|控制对象|附带部件|附件|配套设备).*$", "");
+			for (String clause : detail.split("[；;，,\\r\\n]")) {
+				clause = clause.replaceFirst("^\\s*(?:厂家备注|报价备注|备注)\\s*[:：]\\s*", "");
+				if (ELECTRIC_CONTROL_DETAIL.matcher(clause).find()) return true;
+			}
+		}
+		return false;
+	}
+
+	/** 本体的电动执行机构是控制要求，不作为规格里的第二个采购产品。 */
+	static String controlValveProductText(Map<String, Object> row) {
+		String spec = s(row, "spec");
+		if (supplementaryElectricControl(row)) spec = ELECTRIC_CONTROL_DETAIL.matcher(spec).replaceAll(" ");
+		return s(row, "name") + "；" + spec;
+	}
+
+	/** 未覆盖的电动结构或相反控制要求必须核验，不能直接采用通用手动阀成本。 */
+	static String electricControlIssue(Map<String, Object> row) {
+		if (supplementaryElectricControl(row) && s(map(row.get("attributes")), "equipment_kind").equals("manual"))
+			return "本行规格或备注明确要求电动机构，与所选手动调节阀计算类型不一致，请核对计算类型";
+		String name = positiveElectricText(mainProductText(s(row, "name")));
+		if (!has("调节(?:风)?阀|蝶阀", name) || !electricControlRequired(name)) return "";
+		String kind = classifySource(obj("name", name));
+		if (!Set.of("", "manual", "electric_control").contains(kind)) return "";
+		if (name.contains("手动")) return "主产品同时包含手动和电动要求，控制方式冲突，请核对实际产品类型";
+		if (!ELECTRIC_CONTROL_NAME.matcher(name).find())
+			return "主产品含电动要求，但名称尚未对应唯一的电动调节阀规则，请核对产品类型，不能套用手动调节阀成本";
+		if (s(map(row.get("attributes")), "equipment_kind").equals("manual"))
+			return "主产品明确为电动调节阀，与所选手动调节阀计算类型冲突，请核对计算类型";
+		return "";
+	}
+
 	/**
 	 * 只从原文识别主产品，不采用 AI 或已有属性里的类别建议。
 	 * 先排除明确的控制分段和附件描述，再取主产品段中最先出现的产品短语，同位置优先更完整的短语。
 	 */
 	public static String classifySource(Map<String, Object> row) {
-		String name = mainProductText(s(row, "name"));
+		String name = positiveElectricText(mainProductText(s(row, "name")));
+		if (EngineeringImportReview.water(s(EngineeringImportReview.source(row), "section"), name)) return "purchased";
+		if (name.contains("电动排烟防火阀")) return "electric_fire";
+		if (name.matches("^(?:CO浓度探测仪|压力传感器|(?:电动加压送风口|排风阀)?手动执行机构)(?:[，, -].*)?$")) return "purchased";
+		String productName = AiInputReview.productName(name);
+		if (productName.matches("(?s).*(?:执行机构|执行器|探测仪|传感器|控制器)$")
+				&& !productName.matches("(?s).*(?:带|附|配|含).*(?:执行机构|执行器|探测仪|传感器|控制器)$")) return "";
 		String[][] rules = { { "purchased", "风机控制柜", "风机控制箱", "通风器", "换气扇", "排气扇" },
-				{ "elbow", "消声弯头", "消音弯头" }, { "plenum", "接管箱", "静压箱", "消声静压箱" },
+				{ "elbow", "消声弯头", "消音弯头" }, { "plenum", "接管箱", "静压箱", "消声静压箱", "风管连接箱" },
 				{ "silencer", "消声器", "消音器" }, { "plate_smoke", "板式排烟" },
-				{ "multi_leaf", "多叶排烟", "电动百叶风口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "正压送风阀", "组合送风口" },
+				{ "multi_leaf", "多叶排烟", "电动百叶风口", "多叶送风口", "多叶加压送风口", "多叶加压送风", "正压送风口", "加压送风口", "正压送风阀", "组合送风口" },
 				{ "pressure_relief", "余压", "泄压阀" },
 				{ "check", "止回" }, { "electric_fire", "电动防火" },
 				{ "fire", "防火调节阀", "防火阀", "防烟防火阀", "排烟阀", "防烟阀" },
@@ -151,22 +211,30 @@ public final class EquipmentPricingEngine {
 				}
 			}
 		// 对开、多叶等结构修饰不能把电动调节阀降为手动，仍按主产品首次出现的位置判别。
-		Matcher electricControl = match("电动\\s*(?:(?:对开|多叶|风量)\\s*)*调节(?:风)?阀", name);
+		if (kind.equals("manual") && electricControlRequired(name) && name.contains("手动")) return "";
+		Matcher electricControl = ELECTRIC_CONTROL_NAME.matcher(name);
 		if (electricControl.find() && electricControl.start() <= first)
 			return "electric_control";
+		if (kind.equals("manual") && supplementaryElectricControl(row)) return "electric_control";
+		if (kind.equals("manual") && electricControlRequired(name)) return "";
+		if (kind.isEmpty() || kind.equals("fan")) {
+			String fanText = name + " " + mainProductText(s(row, "spec"));
+			if (FanModelNames.outsourced(fanText)) return "purchased";
+		}
 		if (!kind.isEmpty())
 			return kind;
 		// 位置编号等名称没有明确产品短语时，才用原文中的已知风机型号补充识别。
 		String modelText = name + " " + mainProductText(s(row, "spec")) + " " + mainProductText(s(row, "remark"))
 				+ " " + mainProductText(s(row, "source_text"));
-		if (has("(?<![A-Z0-9])(?:HTFC?|SWF|GXF|HL3|DFBZ)(?:[-－（(]|\\b)", modelText))
+		if (FanModelNames.outsourced(modelText)) return "purchased";
+		if (has(FanModelNames.MODEL_PATTERN, modelText))
 			return "fan";
 		return s(row, "category").equals("外购设备") ? "purchased" : "";
 	}
 
 	/** 明确带/配的括号和前置附件，以及联锁/复位等控制分段，都不作为申购本体。 */
-	private static String mainProductText(String text) {
-		String main = text.replaceAll("[（(]\\s*(?:带|附(?:带)?|含|配(?:套)?)[^（）()]*[）)]", " ");
+	static String mainProductText(String text) {
+		String main = text.replaceAll("[（(]\\s*(?:自?带|附(?:带)?|含|配(?:套)?)[^（）()]*[）)]", " ");
 		String remaining = main.replaceFirst("^\\s*(?:带|附(?:带)?|含|配(?:套)?)[^\\r\\n;；（）()]*?(?:阀|百叶(?:风口)?)\\s*", "");
 		// 只有后面还有明确主产品或型号时，前面的带阀/百叶才是另一设备的附件。
 		if (!remaining.equals(main) && !remaining.isBlank() && !classifySource(obj("name", remaining)).isBlank())
@@ -207,13 +275,19 @@ public final class EquipmentPricingEngine {
 			if (v != null && !"".equals(v))
 				a.put(k, v);
 		});
-		String all = s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark") + " " + s(row, "source_text");
+		String sourceText = s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark") + " " + s(row, "source_text");
+		String all = kind.equals("fan") ? FanSpeedParameters.normalizeUnits(sourceText) : sourceText;
 		boolean fireValveInput = Set.of("fire", "electric_fire").contains(kind);
 		if (fireValveInput && has("(?<![0-9])150\\s*(?:℃|°\\s*C?|度|C\\b)", all))
 			a.put("valve_material_variant", "fire_150");
 		// 括号加法尺寸先拆分阀体与面板段；正压及其同类名称在末尾恢复整体高。
-		String dimensionsText = has(DECIMAL + "\\s*[×xX*＊]", s(row, "spec")) ? s(row, "spec") : s(row, "name");
+		String mainDimensions = mainProductText(s(row, "name")) + " " + mainProductText(s(row, "spec"))
+				+ " " + mainProductText(s(row, "remark")) + " " + mainProductText(s(row, "source_text"));
+		mainDimensions = AiInputReview.unusableGeometry(mainDimensions) ? "" : AiInputReview.normalizeDimensionUnits(mainDimensions);
+		String dimensionsText = has(DECIMAL + "\\s*[×xX*＊]", mainProductText(s(row, "spec")))
+				? mainProductText(s(row, "spec")) : mainProductText(s(row, "name"));
 		if (dimensionsText.isBlank()) dimensionsText = s(a, "dimension_expression");
+		dimensionsText = AiInputReview.unusableGeometry(dimensionsText) ? "" : AiInputReview.normalizeDimensionUnits(dimensionsText);
 		Matcher panel = match(DECIMAL + "\\s*[×xX*＊]\\s*[（(]\\s*" + DECIMAL + "\\s*[+＋]\\s*" + DECIMAL + "\\s*[）)]", dimensionsText);
 		if (panel.find()) {
 			if (Set.of("multi_leaf", "plate_smoke").contains(kind))
@@ -225,16 +299,18 @@ public final class EquipmentPricingEngine {
 				a.putIfAbsent("height", text(add(n(panel.group(2)), n(panel.group(3)))));
 			}
 		}
-		Matcher dims = match(DECIMAL + "\\s*[×xX*＊]\\s*" + DECIMAL + "(?:\\s*[×xX*＊]\\s*" + DECIMAL + ")?", dimensionsText + " " + all);
+		Matcher dims = match(DECIMAL + "\\s*[×xX*＊]\\s*" + DECIMAL + "(?:\\s*[×xX*＊]\\s*" + DECIMAL + ")?", dimensionsText + " " + mainDimensions);
 		if (dims.find()) {
 			String[] keys = { "width", "height", "length" };
 			for (int i = 0; i < 3; i++)
 				if (dims.group(i + 1) != null)
 					a.putIfAbsent(keys[i], dims.group(i + 1));
 		}
-		Matcher diameter = match("(?:[ΦφØø]|DN|直径\\s*[:：=]?)\\s*" + DECIMAL, all);
+		Matcher diameter = match("(?:[ΦφØø]|DN|直径\\s*[:：=]?)\\s*" + DECIMAL, mainDimensions);
 		if (diameter.find())
 			a.putIfAbsent("diameter", diameter.group(1));
+		if (RoundDimensions.confirmed(row) && RoundDimensions.hasChoice(row))
+			a.put("diameter", a.get("confirmed_diameter"));
 		// 圆形尺寸统一用直径作为宽高，并记录 round；不能同时把直径和矩形尺寸重复计入。
 		if (!blank(a.get("diameter")) && (!valveAlias || !Set.of("square", "rectangular").contains(s(a, "shape")))) {
 			a.put("width", a.get("diameter"));
@@ -265,7 +341,7 @@ public final class EquipmentPricingEngine {
 			if (all.contains(rule[0]))
 				a.putIfAbsent(rule[1], rule[2]);
 		boolean controlledValve = Set.of("fire", "electric_fire", "plate_smoke").contains(kind)
-				|| PressureSupplyOutlet.applies(row);
+				|| PressureSupplyOutlet.applies(row) || FireOutletRule.applies(row);
 		if (controlledValve) {
 			String control = valveControl(a.get("control"));
 			if (control.isEmpty()) {
@@ -291,31 +367,35 @@ public final class EquipmentPricingEngine {
 			thicknessText = all.replaceAll(bladePattern, "");
 		}
 		String bodyThicknessText = thicknessText;
-		patterns.put("airflow", "(?:风量|(?<![A-Z])(?:Q|L)\\s*[:：=＝])\\s*[:：=＝]?\\s*" + DECIMAL);
-		patterns.put("pressure", "(?:全压|静压|风压|CMH\\s*P|(?<![A-Z0-9.])(?:P|H))\\s*[:：=＝]?\\s*" + DECIMAL);
+		String pressureText = kind.equals("fan") ? FanSpeedParameters.withoutStaticPressure(all) : all;
+		patterns.put("airflow", "(?:风量|(?<![A-Z])(?:" + (Set.of("silencer", "plenum", "elbow").contains(kind) ? "Q" : "Q|L") + ")\\s*[:：=＝])\\s*[:：=＝]?\\s*" + DECIMAL);
+		patterns.put("pressure", (kind.equals("fan") ? FanSpeedParameters.pressurePrefix(pressureText)
+				: "(?:全压|静压|风压|CMH\\s*P|(?<![A-Z0-9.])(?:P|H))\\s*[:：=＝]?\\s*") + DECIMAL);
 		patterns.put("speed", "(?:转速\\s*[:：=＝]?\\s*|(?<![A-Z])N\\s*[:：=＝]\\s*)?" + DECIMAL + "\\s*(?:r/min|rpm|转/分)");
 		patterns.put("thickness", "(?:厚度|板厚|厚)\\s*[:：=＝]?\\s*" + DECIMAL);
 		patterns.put("power", "(\\d+(?:\\.\\d+)?(?:\\s*/\\s*\\d+(?:\\.\\d+)?)?)\\s*(?:kW|千瓦)");
 		patterns.forEach((key, pattern) -> {
-			Matcher m = match(pattern, key.equals("thickness") ? bodyThicknessText : all);
+			Matcher m = match(pattern, key.equals("thickness") ? bodyThicknessText : key.equals("pressure") ? pressureText : all);
 			if (m.find())
 				a.putIfAbsent(key, m.group(1).replace(" ", ""));
 		});
+		AcousticLengthInputs.parse(row, a);
 		// 斜线高低档风量、风压分别记录，双速选型时低档条件也要满足。
 		for (String key : List.of("airflow", "pressure")) {
-			Matcher pair = match(patterns.get(key) + "\\s*/\\s*" + DECIMAL, all);
+			Matcher pair = match(patterns.get(key) + "\\s*/\\s*" + DECIMAL, key.equals("pressure") ? pressureText : all);
 			if (pair.find())
 				a.putIfAbsent(key + "_low", pair.group(2));
 		}
 		// 客户也会直接写 1200CMH/80Pa；仅补齐未由独立字段或参数名称识别出的值。
 		for (String key : List.of("airflow", "pressure")) {
 			String unit = key.equals("airflow") ? "(?:CMH|m[³3]\\s*/\\s*h)" : "Pa";
-			Matcher value = match("(?<![A-Z0-9.])" + DECIMAL + "\\s*" + unit + "(?![A-Z0-9])", all);
+			Matcher value = match("(?<![A-Z0-9.])" + DECIMAL + "\\s*" + unit + "(?![A-Z0-9])", key.equals("pressure") ? pressureText : all);
 			if (value.find()) a.putIfAbsent(key, value.group(1));
 		}
-		String modelPattern = kind.equals("purchased") ? "\\b[A-Z]{2,}[A-Z\\d]*[-－][A-Z\\d.－-]+"
-				: "(?<![A-Z0-9])(?:HTFC|HTF(?:\\([A-Z]\\))?|SWF|GXF|HL3|DFBZ)[-－A-ZIⅠⅡ\\d.()]*";
-		Matcher model = match(modelPattern, all);
+		String modelPattern = kind.equals("purchased") ? "(?:" + FanModelNames.MODEL_PATTERN + "|\\b[A-Z]{2,}[A-Z\\d]*[-－][A-Z\\d.－-]+)"
+				: FanModelNames.MODEL_PATTERN;
+		// 名称常只写系列缩写，完整客户型号以规格列优先，避免“PYHL-14A”挡住规格中的“PYHL-14A-5”。
+		Matcher model = match(modelPattern, kind.equals("fan") ? s(row, "spec") + " " + all : all);
 		if (!a.containsKey("power")) {
 			Matcher watts = match(DECIMAL + "\\s*W\\b", all);
 			if (watts.find())
@@ -341,7 +421,12 @@ public final class EquipmentPricingEngine {
 			String purchasedType = PurchasedEquipment.requestedType(row);
 			if (!purchasedType.isEmpty()) a.putIfAbsent("purchased_type", purchasedType);
 		}
+		if (kind.equals("fan")) FanSpeedParameters.normalize(row, a, all);
+		// 普通风阀的钢制/钢质沿用镀锌板报价口径；150°专用不锈钢及其他明确材质不覆盖。
+		if (EquipmentCatalog.VALVES.contains(kind) && !s(a, "valve_material_variant").equals("fire_150")
+				&& Set.of("钢制", "钢质").contains(s(a, "material"))) a.put("material", "galvanized");
 		PressureSupplyOutlet.normalize(row, a);
+		AiInputReview.clearedFields(a).forEach(a::remove);
 		return a;
 	}
 
@@ -370,7 +455,10 @@ public final class EquipmentPricingEngine {
 		if (cfg.isEmpty()) throw new RuleException(label + "成本规则未发布，请补齐该类型的机构、叶片及人工成本资料");
 		if (List.of("blade_thickness", "mechanism", "labor_base").stream().anyMatch(k -> blank(cfg.get(k))))
 			throw new RuleException(label + "成本规则缺少叶片板厚、机构费或基础人工费，请补齐成本资料");
-		BigDecimal w = required(a, "width", "宽度（mm）"), h = required(a, "height", "高度（mm）");
+		boolean roundValve = s(a, "shape").equals("round");
+		boolean diameterDimensions = roundValve && !blank(a.get("diameter"));
+		BigDecimal w = diameterDimensions ? required(a, "diameter", "圆阀直径（mm）") : required(a, "width", "宽度（mm）");
+		BigDecimal h = diameterDimensions ? w : required(a, "height", "高度（mm）");
 		boolean pressureSupply = kind.equals("multi_leaf") && yes(a.get("_pressure_supply"));
 		boolean fireValve = !proxy && Set.of("fire", "electric_fire").contains(kind);
 		boolean plateSmoke = kind.equals("plate_smoke");
@@ -380,9 +468,10 @@ public final class EquipmentPricingEngine {
 				: plateSmoke ? false : fireValve ? longSide.compareTo(rate(rates, "split_width")) > 0
 						|| shortSide.compareTo(rate(rates, "split_height")) > 0
 				: w.compareTo(rate(rates, "split_width")) > 0 || h.compareTo(rate(rates, "split_height")) > 0;
-		// 防火阀/板式基础1个，再将长边每2000、短边每1000增加的机构相加；正压保持原短边规则。
-		BigDecimal mechanismCount = pressureSupply ? w.divide(positive(pressureSupplyRate(rates,
-				"pressure_supply_mechanism_width", "1000"), "正压机构宽度"), 0, RoundingMode.CEILING)
+		// 基础1个，长边每2000与短边每1000增加的机构相加；正压短边界限仍读取其专用指标。
+		BigDecimal mechanismCount = pressureSupply ? add(longSide.divide(n(2000), 0, RoundingMode.CEILING),
+				shortSide.divide(positive(pressureSupplyRate(rates, "pressure_supply_mechanism_width", "1000"),
+						"正压机构宽度"), 0, RoundingMode.CEILING)).subtract(ONE)
 				: fireValve || plateSmoke ? add(longSide.divide(n(2000), 0, RoundingMode.CEILING),
 						shortSide.divide(n(1000), 0, RoundingMode.CEILING)).subtract(ONE) : ONE;
 		BigDecimal groups = n(split ? 2 : 1), blades = mul(ceil(div(kind.equals("multi_leaf") ? w : h, 200)), groups);
@@ -478,6 +567,9 @@ public final class EquipmentPricingEngine {
 		if (parts.values().stream().anyMatch(v -> v.signum() < 0))
 			throw new RuleException("尺寸或成本参数使阀体成本为负，请核对");
 		// 组成项金额及实际公式同时保存，明细反映零项、倍率、机构和面板的真实计算口径。
+		// 圆阀先按直径×直径算全成本（含机构、控制附加、拼接及面板），再统一加30%加工费。
+		BigDecimal ordinaryValveCost = parts.values().stream().reduce(ZERO, QuoteData::add);
+		if (roundValve) parts.put("round_processing", mul(ordinaryValveCost, n("0.3")));
 		Map<String, Object> components = obj();
 		parts.forEach((k, v) -> components.put(k, text(v)));
 		Map<String, Object> componentFormulas = obj();
@@ -496,6 +588,7 @@ public final class EquipmentPricingEngine {
 		if (kind.equals("multi_leaf") && split)
 			componentFormulas.put("shaft", "(" + s(expressions, "shaft") + ") × 2");
 		if (pressureSupply) componentFormulas.put("link", pressureLink);
+		if (roundValve) componentFormulas.put("round_processing", text(ordinaryValveCost) + " × (1.3 - 1)");
 		componentFormulas.put("mechanism", perMechanism
 				? "(" + text(mechanismBase) + " + " + text(add(remoteExtra, autoExtra)) + ") × " + text(mechanismCount)
 				: text(mechanismBase) + " + " + text(remoteExtra));
@@ -573,8 +666,7 @@ public final class EquipmentPricingEngine {
 		String layer = str(a.getOrDefault("layer", "single"));
 		if (!Set.of("single", "double").contains(layer))
 			throw new RuleException("请明确单层或双层");
-		BigDecimal rate = rate(rates, layer.equals("double") ? "double_layer_rate"
-				: kind.equals("silencer") ? "silencer_rate" : "plenum_rate");
+		BigDecimal rate = AcousticRegionalCost.rate(kind, a, catalog);
 		BigDecimal cost = mul(area, n(a.getOrDefault("area_cost", rate))),
 				thickness = n(a.getOrDefault("thickness", ".75"));
 		// 0.75mm 为基础口径，1.0/1.2mm 和角钢分别除以指标系数；其他板厚没有依据就待确认。
@@ -596,6 +688,7 @@ public final class EquipmentPricingEngine {
 		return new Cost(cost,
 				obj("width", text(sourceWidth), "height", text(sourceHeight), "length", text(length),
 						"adjusted_width", text(w), "adjusted_height", text(h), "area", text(area),
+						"area_cost_region", !a.containsKey("area_cost") && !layer.equals("double") && catalog.containsKey("acoustic_region_costs") ? s(catalog, "_acoustic_region") : "",
 						"area_rate", text(n(a.getOrDefault("area_cost", rate))), "layer", layer,
 						"thickness_divisor", text(thicknessDivisor), "angle_divisor", text(angleDivisor)));
 	}
@@ -623,15 +716,19 @@ public final class EquipmentPricingEngine {
 		Map<String, Object> out = obj("status", "pending", "reason", "", "unit_price", null, "amount", null, "trace",
 				traces, "candidates", new ArrayList<>(), "pricing_mode", "equipment_v1");
 		try {
+			EngineeringImportReview.requirePricingBasis(row);
+			String lengthReason = AcousticLengthInputs.reason(row);
+			if (!lengthReason.isBlank()) throw new RuleException(lengthReason);
 			if (!blank(row.get("product_rule_issue")))
 				throw new RuleException(s(row, "product_rule_issue"));
 			if (blank(row.get("name")))
 				throw new RuleException("请填写设备名称");
 			String sourceReason = EquipmentReview.sourceReason(row);
-			if (!sourceReason.isBlank() && !yes(row.get("source_issue_confirmed")))
+			if (!sourceReason.isBlank() && !RoundDimensions.confirmed(row))
 				throw new RuleException(sourceReason);
 			if (catalog == null)
 				throw new RuleException("设备指标尚未发布或存在多个有效指标，请先核对指标版本");
+			var regionalCatalog = AcousticRegionalCost.withRegion(catalog, options);
 			BigDecimal qty = required(row, "quantity", "数量");
 			String productRuleType = s(map(map(row.get("_product_rule_resource")).get("body")), "rule_type");
 			// 组合和全新公式先返回每 1 报价单位未税成本，再进入同一毛利、税费和数量结算流程。
@@ -645,7 +742,10 @@ public final class EquipmentPricingEngine {
 			}
 			if (!customCost && !KINDS.contains(kind))
 				throw new RuleException("未识别设备类型，请明确本行产品类型");
-			if (!customCost && !kind.equals("elbow") && !Set.of("台", "个", "只", "套", "件", "组", "樘").contains(s(row, "unit")))
+			if (!customCost && kind.equals("plenum") && AcousticQuantityRows.areaUnit(s(row, "unit")))
+				throw new RuleException("静压箱按个计价，客户面积仅用于核对，请确认设备个数和数量单位");
+			if (!customCost && !kind.equals("elbow")
+					&& !Set.of("台", "个", "只", "套", "件", "组", "樘").contains(s(row, "unit")))
 				throw new RuleException("设备数量单位应为台、个、只、套、件、组或樘");
 			var rates = map(catalog.get("rates"));
 			var term = list(catalog.get("payment_terms")).stream()
@@ -664,7 +764,7 @@ public final class EquipmentPricingEngine {
 			if (productRuleType.equals("formula"))
 				calculated = ProductRuleCatalog.formulaCost(row, catalog);
 			else if (productRuleType.equals("combination"))
-				calculated = ProductRuleCatalog.combinationCost(row, catalog);
+				calculated = ProductRuleCatalog.combinationCost(row, regionalCatalog);
 			else if (kind.equals("fan")) {
 				String reviewReason = EquipmentReview.reason(row, a);
 				if (!reviewReason.isBlank()) throw new RuleException(reviewReason);
@@ -680,7 +780,7 @@ public final class EquipmentPricingEngine {
 			else if (Set.of("fire", "electric_fire", "electric_control", "manual", "check", "pressure_relief", "multi_leaf", "plate_smoke").contains(kind))
 				calculated = valveCost(kind, a, catalog);
 			else if (Set.of("louver", "silencer", "plenum").contains(kind))
-				calculated = areaCost(kind, row, a, catalog);
+				calculated = areaCost(kind, row, a, regionalCatalog);
 			else if (kind.equals("purchased"))
 				calculated = PurchasedEquipment.cost(row, a, catalog);
 			Map<String, Object> detail = calculated == null ? obj() : calculated.detail();
@@ -718,8 +818,9 @@ public final class EquipmentPricingEngine {
 						Cost valve;
 						try { valve = valveCost(valveKind, valveAttributes, catalog); }
 						catch (RuleException e) { throw new RuleException("附带阀门：" + e.getMessage()); }
-						BigDecimal round = s(valveAttributes, "shape").equals("round") ? rate(rates, "round_factor") : ONE;
-						BigDecimal valvePerUnit = mul(valve.amount(), round);
+						// 阀门成本已经包含圆阀加工费，保留旧明细字段但不得再次乘外形系数。
+						BigDecimal round = ONE;
+						BigDecimal valvePerUnit = valve.amount();
 						BigDecimal valveTotal = mul(valvePerUnit, required(a, "attached_valve_count", "每台风机附阀数量"));
 						detail.put("fan_adjusted_cost", text(cost));
 						valveDetail.putAll(obj("detail", valve.detail(), "ordinary_cost", text(valve.amount()),
@@ -770,9 +871,8 @@ public final class EquipmentPricingEngine {
 					base = base.divide(fraction(rates.get("tax_factor")));
 				traces.add(trace("消声弯头固定供货价", "人工面积 × 200（含税）；不含税报价除税系数", ftext(base)));
 			}
-			// 独立圆形阀门/面积设备对售价应用外形系数；风机附圆阀只在附阀成本部分应用，整台风机不再乘。
-			if (s(a, "shape").equals("round") && (map(catalog.get("valves")).containsKey(kind)
-					|| Set.of("pressure_relief", "louver", "silencer", "plenum").contains(kind))) {
+			// 圆阀已在完整成本中加加工费；圆形风口、消声器和静压箱仍沿用原售价系数。
+			if (s(a, "shape").equals("round") && Set.of("louver", "silencer", "plenum").contains(kind)) {
 				base = base.multiply(fraction(rates.get("round_factor")));
 				detail.put("round_factor", text(rate(rates, "round_factor")));
 			}
@@ -807,6 +907,7 @@ public final class EquipmentPricingEngine {
 		}
 		catch (EquipmentFanSelector.SelectionException e) {
 			out.put("reason", e.getMessage());
+			QuoteProblem.attach(out, e);
 			out.put("candidates",
 					e.candidates.stream()
 						.map(p -> obj("id", p.get("id"), "body", obj("name", p.get("model"), "attributes", p)))
@@ -814,6 +915,7 @@ public final class EquipmentPricingEngine {
 		}
 		catch (RuleException e) {
 			out.put("reason", e.getMessage());
+			QuoteProblem.attach(out, e);
 		}
 		catch (NullPointerException | ClassCastException | ArithmeticException | NoSuchElementException e) {
 			out.put("reason", "设备规则或数据结构不完整，请核对指标");

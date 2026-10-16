@@ -323,6 +323,7 @@ public final class DuctPricingEngine {
 		Map<String, Object> out = obj("status", "pending", "reason", "", "unit_price", null, "amount", null, "trace",
 				new ArrayList<>(), "billing_unit", "㎡");
 		try {
+			EngineeringImportReview.requirePricingBasis(source);
 			if (!blank(source.get("product_rule_issue")))
 				throw new RuleException(s(source, "product_rule_issue"));
 			String productDescription = description(source);
@@ -569,11 +570,13 @@ public final class DuctPricingEngine {
 			return InstallationPricingEngine.finalizeOrder(quote,
 					InstallationPricingEngine.scopeOnlyResult(quote, policy, VERSION), resources, supplyOnly, day);
 		Map<String, Object> options = new LinkedHashMap<>(map(quote.get("duct_options")));
+		AccessoryImportReview.resolve(options);
 		options.put("include_installation", InstallationPricingEngine.enabled(quote));
 		List<Map<String, Object>> catalogs = DuctCatalog.active(resources, day);
 		Map<String, Object> resource = catalogs.size() == 1 ? catalogs.get(0) : null,
 				catalog = resource == null ? null : map(resource.get("body"));
 		List<String> issues = new ArrayList<>();
+		issues.addAll(AccessoryImportReview.issues(options));
 		if (resource == null)
 			issues.add("新版风管指标未发布或版本冲突");
 		Map<String, Object> rates = catalog == null ? null : map(catalog.get("rates")), payment = null;
@@ -610,7 +613,8 @@ public final class DuctPricingEngine {
 				/* 具体原因在本行试算时返回。 */ }
 		}
 		// 一旦填写整单30#/40#法兰米数，就按整单另列，相关行不再重复按㎡折算法兰。
-		boolean aggregate = !blank(options.get("flange_30_meters")) || !blank(options.get("flange_40_meters"));
+		boolean aggregate = !blank(options.get("flange_30_meters")) || !blank(options.get("flange_40_meters"))
+				|| AccessoryImportReview.has(options, "flange_30_meters") || AccessoryImportReview.has(options, "flange_40_meters");
 		List<Map<String, Object>> aggregateItems = new ArrayList<>(), accessoryItems = new ArrayList<>();
 		BigDecimal accessory = ZERO;
 		String accessoryMode = "pending";
@@ -622,13 +626,15 @@ public final class DuctPricingEngine {
 				for (int size : List.of(30, 40)) {
 					if (blank(options.get("flange_" + size + "_meters")))
 						continue;
-					BigDecimal meters = positive(options.get("flange_" + size + "_meters"), "整单" + size + "#角钢法兰米数");
+					for (var source : AccessoryImportReview.items(options, "flange_" + size + "_meters")) {
+					BigDecimal meters = positive(source.get("quantity"), "整单" + size + "#角钢法兰米数");
 					Map<String, Object> selected = selectFlange(catalog, "black", size, n(size == 30 ? "7.5" : "12.5"));
 					Map<String, Object> item = pricedItem(flangePrice(selected, catalog), meters, factor, tax);
 					item.putAll(obj("size", size, "name",
-							blank(selected.get("name")) ? size + "#黑角钢法兰" : s(selected, "name"), "meters", text(meters),
+							(blank(selected.get("name")) ? size + "#黑角钢法兰" : s(selected, "name")) + AccessoryImportReview.location(source), "meters", text(meters),
 							"source", "客户清单整单实际米数"));
 					staged.add(item);
+					}
 				}
 				aggregateItems = staged;
 			}
@@ -638,10 +644,13 @@ public final class DuctPricingEngine {
 		}
 		if (rates != null && payment != null && bool(options.get("tax_included"))) {
 			try {
-				if (!common)
+				if (AccessoryImportReview.pending(options, "corner_count") || AccessoryImportReview.pending(options, "clip_meters"))
+					accessoryMode = "pending";
+				else if (!common)
 					accessoryMode = "not_applicable";
 				// 实际角码/卡扣另列仅适用于存在半成品共板风管的整单；否则仍按每㎡附件费计入。
-				else if ((blank(options.get("corner_count")) && blank(options.get("clip_meters"))) || !semiCommon) {
+				else if ((blank(options.get("corner_count")) && blank(options.get("clip_meters"))
+						&& !AccessoryImportReview.has(options, "corner_count") && !AccessoryImportReview.has(options, "clip_meters")) || !semiCommon) {
 					accessoryMode = "per_sqm";
 					accessory = rate(rates, "accessory_per_sqm");
 				}
@@ -653,13 +662,15 @@ public final class DuctPricingEngine {
 						if (blank(options.get(key)))
 							continue;
 						boolean corner = key.equals("corner_count");
-						BigDecimal quantity = nonnegative(options.get(key), corner ? "角码数量" : "卡扣长度");
+						for (var source : AccessoryImportReview.items(options, key)) {
+						BigDecimal quantity = nonnegative(source.get("quantity"), corner ? "角码数量" : "卡扣长度");
 						Map<String, Object> item = pricedItem(
 								rate(rates, corner ? "corner_unit_price" : "clip_per_meter_price"), quantity, factor,
 								tax);
-						item.putAll(obj("code", corner ? "corner" : "clip", "name", corner ? "角码" : "卡扣", "unit",
+						item.putAll(obj("code", corner ? "corner" : "clip", "name", (corner ? "角码" : "卡扣") + AccessoryImportReview.location(source), "unit",
 								corner ? "个" : "米", "quantity", text(quantity)));
 						staged.add(item);
+						}
 					}
 					accessoryItems = staged;
 					accessoryMode = "actual";
@@ -702,6 +713,12 @@ public final class DuctPricingEngine {
 						!aggregateItems.isEmpty() ? "ready" : aggregate ? "pending" : "not_applicable",
 						!aggregateItems.isEmpty() ? "整单实际米数另列，不再按1.72折算"
 								: aggregate ? "整单实际法兰米数尚未明确对应材质，未计入小计" : "未使用整单实际米数"));
+		if (AccessoryImportReview.pending(options, "flange_30_meters") || AccessoryImportReview.pending(options, "flange_40_meters"))
+			fees.put("aggregate_flanges", fee(sum(aggregateItems, "amount"), "pending", "存在同类角铁用量待确认，未确认部分未计入小计"));
+		else if (aggregate && blank(options.get("flange_30_meters")) && blank(options.get("flange_40_meters")))
+			fees.put("aggregate_flanges", fee(ZERO, "not_applicable", "原表角铁行已明确排除计价"));
+		if (AccessoryImportReview.pending(options, "corner_count") || AccessoryImportReview.pending(options, "clip_meters"))
+			fees.put("accessories", fee(sum(accessoryItems, "amount"), "pending", "存在同类配件用量待确认，未确认部分未计入小计"));
 		if (!yes(options.get("include_freight")))
 			fees.put("freight", fee(ZERO, "not_applicable", "本单不需要"));
 		else if (rates == null || priced.isEmpty() || pending > 0) {

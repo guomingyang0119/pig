@@ -53,8 +53,7 @@ public class QuoteController {
 	@GetMapping("/resources")
 	@HasPermission("quote_view")
 	public R<?> resources() {
-		actor();
-		return R.ok(service.resources());
+		return R.ok(service.resources(actor()));
 	}
 
 	/**
@@ -73,6 +72,14 @@ public class QuoteController {
 	@HasPermission("quote_manage")
 	public R<?> equipmentSeed() {
 		return R.ok(service.equipmentSeed(actor()));
+	}
+
+	/** 地区参考成本只供查看；读取不创建版本，也不改变当前生效指标。 */
+	@GetMapping("/equipment/acoustic-region-costs")
+	@HasPermission("quote_view")
+	public R<?> acousticRegionCosts() {
+		actor();
+		return R.ok(service.acousticRegionCosts());
 	}
 
 	/**
@@ -208,6 +215,7 @@ public class QuoteController {
 		QuoteService.Actor owner = actor();
 		if (action.equals("start")) return R.ok(aiJobs.start(owner, files, jobId));
 		if (action.equals("next")) return R.ok(aiJobs.next(owner, jobId));
+		if (action.equals("pause")) return R.ok(aiJobs.pause(owner, jobId));
 		if (action.equals("cancel")) return R.ok(aiJobs.cancel(owner, jobId));
 		if (!action.equals("legacy")) throw new RuleException("未知的整理操作");
 		List<Map<String, Object>> rows = aiImporter.normalize(files);
@@ -219,6 +227,12 @@ public class QuoteController {
 	@HasPermission("quote_edit")
 	public R<?> aiImportStatus(@RequestParam(required = false) String jobId) {
 		return R.ok(blank(jobId) ? aiJobs.recent(actor()) : aiJobs.status(actor(), jobId));
+	}
+
+	@GetMapping("/ai-import-limits")
+	@HasPermission("quote_edit")
+	public R<?> aiImportLimits() {
+		return R.ok(aiImporter.limits());
 	}
 
 	/**
@@ -284,6 +298,35 @@ public class QuoteController {
 	@HasPermission("quote_edit")
 	public R<?> create(@RequestBody Map<String, Object> data) {
 		return R.ok(service.create(actor(), data));
+	}
+
+	/** AI建议只供预览；采用后仍走普通草稿保存与试算，并发变更不返回过期建议。 */
+	@PostMapping("/quotes/{id}/ai-assist")
+	@HasPermission("quote_edit")
+	public R<?> aiAssist(@PathVariable String id, @RequestBody Map<String, Object> data) {
+		var owner = actor();
+		var rows = service.aiAssistRows(owner, id, data);
+		var suggestions = aiImporter.suggestRows(rows);
+		service.aiAssistRows(owner, id, data);
+		return R.ok(obj("revision", data.get("revision"), "suggestions", suggestions));
+	}
+
+	@PostMapping("/quotes/{id}/ai-retry")
+	@HasPermission("quote_edit")
+	public R<?> aiRetry(@PathVariable String id, @RequestBody Map<String, Object> data) {
+		var owner = actor();
+		var rows = service.failedAiRows(owner, id, data);
+		java.util.List<java.util.Map<String, Object>> suggestions = java.util.List.of();
+		String error = "";
+		try { suggestions = aiImporter.suggestFailedRows(rows, Boolean.TRUE.equals(data.get("include_features"))); }
+		catch (RuleException ex) { error = ex.getMessage(); }
+		return R.ok(obj("revision", data.get("revision"), "report", service.recordFailedAi(owner, id, data, suggestions, error), "request_error", error));
+	}
+
+	@PostMapping("/quotes/{id}/ai-retry/apply")
+	@HasPermission("quote_edit")
+	public R<?> applyAiRetry(@PathVariable String id, @RequestBody Map<String, Object> data) {
+		return R.ok(service.applyFailedAi(actor(), id, data));
 	}
 
 	/**

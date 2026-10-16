@@ -34,6 +34,7 @@ class QuotationPreviewTests {
 		var jdbc = new JdbcTemplate(source);
 		// 在验收期间持有连接以保留临时内存库；结束后关闭验收服务。
 		try (var keeper = source.getConnection()) {
+			jdbc.execute("CREATE ALIAS JSON_EXTRACT FOR 'com.pig4cloud.pig.admin.quotation.QuotePaginationTests.jsonExtract'");
 			String sql = Files.readString(Path.of("..", "..", "db", "quotation.sql")).split("-- 菜单使用")[0]
 				.replaceAll("(?m)^--.*$", "");
 			for (String statement : sql.split(";"))

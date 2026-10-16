@@ -77,7 +77,7 @@ class AutoImportTests {
 
 	/** 客户项目特征按字段拆分，厚度和法兰不堆进规格，原文继续可追溯。 */
 	@Test
-	void projectDescriptionSeparatesThicknessFlangeAndNotes() {
+	void projectDescriptionKeepsThicknessFlangeAndNotesForReferenceOnly() {
 		String description = "1.名称：镀锌薄钢板\n2.厚度：δ=0.75mm\n3.连接形式：角钢法兰连接\n4.支架：支吊架制作、安装\n5.其他：满足设计及规范要求";
 		var sheet = obj("name", "材料询价单", "rows", List.of(
 				obj("number", 1, "cells", List.of("序号", "名称", "项目特征描述", "单位", "工程量"), "issues", List.of()),
@@ -85,14 +85,14 @@ class AutoImportTests {
 		var row = list(new DuctImportService().buildWorkbook(List.of(sheet), null).get("rows")).get(0);
 		assertEquals("镀锌薄钢板风管", row.get("name"));
 		assertEquals("", row.get("spec"));
-		assertEquals("0.75", attr(row, "thickness"));
-		assertEquals("angle", attr(row, "flange"));
-		assertTrue(s(row, "remark").contains("支吊架制作、安装"));
-		assertTrue(s(row, "remark").contains("满足设计及规范要求"));
+		assertTrue(blank(attr(row, "thickness")));
+		assertTrue(blank(attr(row, "flange")));
+		assertEquals("", s(row, "remark"));
+		assertEquals(description, EngineeringImportReview.source(row).get("feature_description"));
 		assertEquals(description, ((List<?>) map(row.get("original")).get("cells")).get(2));
 	}
 
-	/** 风机规格只显示型号，实际工况移入独立参数且原始要求不丢失。 */
+	/** 项目名称缺少工况时保留缺项，项目特征只作为按需参考的原始证据。 */
 	@Test
 	void fanDescriptionSeparatesModelPerformanceAndBusinessRequirements() {
 		String description = "1.名称：轴流风机\n2.规格：SWF-I-7 风量27500m³/h、功率11Kw、转速2900r/min\n3.支架材质、规格：型钢（综合）\n4.风机软接口风管：满足设计及规范要求";
@@ -100,13 +100,10 @@ class AutoImportTests {
 				obj("number", 1, "cells", List.of("序号", "名称", "项目特征描述", "单位", "数量"), "issues", List.of()),
 				obj("number", 2, "cells", List.of("1", "轴流风机", description, "台", "4"), "issues", List.of())));
 		var row = list(new DuctImportService().buildWorkbook(List.of(sheet), null).get("rows")).get(0);
-		assertEquals("SWF-I-7 风量27500m³/h、功率11Kw、转速2900r/min", row.get("spec"));
-		assertEquals("SWF-I-7", attr(row, "model"));
-		assertEquals("27500", attr(row, "airflow"));
-		assertEquals("11", attr(row, "power"));
-		assertEquals("2900", attr(row, "speed"));
-		assertTrue(s(row, "remark").contains("型钢（综合）"));
-		assertTrue(s(row, "remark").contains("风机软接口风管"));
+		assertEquals("", row.get("spec"));
+		for (String field : List.of("model", "airflow", "power", "speed")) assertTrue(blank(attr(row, field)));
+		assertEquals("", s(row, "remark"));
+		assertEquals(description, EngineeringImportReview.source(row).get("feature_description"));
 		assertEquals("4", row.get("quantity"));
 	}
 

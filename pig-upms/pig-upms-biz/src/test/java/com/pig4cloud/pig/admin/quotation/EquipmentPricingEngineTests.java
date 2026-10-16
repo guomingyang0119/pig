@@ -336,12 +336,31 @@ class EquipmentPricingEngineTests {
 			var expected = frozenExpectedWithConfirmedSplice(c, cases);
 			applyConfirmedValveMechanisms(q, resources, expected);
 			applyConfirmedValveSplices(q, resources, expected);
+			applyConfirmedRoundValveCost(q, resources, expected);
 			applyIndependentGravityIndicator(q, resources, expected);
+			applyConfirmedFanAliases(s(c, "name"), q, resources, expected);
 			var result = s(q, "pricing_mode").equals("mixed_v1") ? engine.mixed(q, resources, map(c.get("policy")))
 					: engine.calculate(q, resources, map(c.get("policy")));
+			// 新确认的系列锁定约束覆盖旧基准中的未知系列自动替代行为。
+			if (Set.of("fan-edge-2747", "fan-edge-2748", "fan-edge-2749").contains(s(c, "name"))) {
+				var row = list(result.get("rows")).get(0);
+				assertEquals("pending", row.get("status"));
+				assertEquals("客户指定的风机系列没有匹配资料，不能自动更换系列", row.get("reason"));
+				assertNull(row.get("unit_price"));
+				assertNull(row.get("amount"));
+				assertTrue(map(map(row.get("detail")).get("selected_fan")).isEmpty());
+				assertFalse(yes(result.get("formal_ready")));
+				return;
+			}
 			if (s(c, "name").equals("parse-正压送风口"))
 				applyConfirmedPressureSupplyCost(expected);
 			allowDetailedFrozenCostReason(list(expected.get("rows")), list(result.get("rows")));
+			// 该旧用例缺的是目录低档资料；只更新本次明确调整的提示，金额、状态和其余字段继续冻结比较。
+			if (s(c, "name").equals("fan-edge-2753")) {
+				var expectedRow = list(expected.get("rows")).get(0);
+				assertEquals("需核实双速高低档风量/风压配对数据", expectedRow.get("reason"));
+				expectedRow.put("reason", "系统风机资料缺少低速档风量、低速档风压，暂不能验证客户要求；请补齐系统资料。参数无误时，可使用已有成本模板或补充已核实的整台采购成本。");
+			}
 			if (s(q, "pricing_mode").equals("mixed_v1"))
 				compareMixed(expected, result, q);
 			else {
@@ -474,6 +493,22 @@ class EquipmentPricingEngineTests {
 		if (converted) updateFrozenEquipmentTotal(expected);
 	}
 
+	/** 圆阀新口径独立作用于冻结成本，不改写 Python 原始样本，也不读取生产计算结果。 */
+	private static void applyConfirmedRoundValveCost(Map<String, Object> quote,
+			List<Map<String, Object>> resources, Map<String, Object> expected) {
+		boolean converted = false;
+		for (var row : list(expected.get("rows"))) {
+			if (!s(row, "status").equals("priced") || !s(map(row.get("attributes")), "shape").equals("round")
+					|| !Set.of("fire", "electric_fire", "electric_control", "manual", "check", "pressure_relief", "multi_leaf", "plate_smoke")
+							.contains(s(row, "equipment_kind"))) continue;
+			var catalog = resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog"))
+					.map(r -> map(r.get("body"))).findFirst().orElseThrow();
+			updateFrozenValvePrice(quote, map(catalog.get("rates")), row);
+			converted = true;
+		}
+		if (converted) updateFrozenEquipmentTotal(expected);
+	}
+
 	private static void updateFrozenValvePrice(Map<String, Object> quote, Map<String, Object> rates,
 			Map<String, Object> row) {
 		assertEquals("equipment_v1", quote.get("pricing_mode"));
@@ -483,12 +518,17 @@ class EquipmentPricingEngineTests {
 		assertEquals(false, options.get("include_freight"));
 		var attributes = map(row.get("attributes"));
 		var components = map(map(row.get("detail")).get("components"));
+		components.remove("round_processing");
 		BigDecimal cost = components.values().stream().map(EquipmentPricingEngineTests::frozenDecimal)
 			.reduce(BigDecimal.ZERO, BigDecimal::add);
+		if (s(attributes, "shape").equals("round")) {
+			components.put("round_processing", cost.multiply(new BigDecimal("0.3")).toPlainString());
+			cost = cost.multiply(new BigDecimal("1.3"));
+			map(row.get("detail")).remove("round_factor");
+		}
 		BigDecimal denominator = BigDecimal.ONE.subtract(frozenDecimal(rates.get("gross_margin")));
 		BigDecimal numerator = cost;
 		if (Boolean.TRUE.equals(options.get("tax_included"))) numerator = numerator.multiply(frozenDecimal(rates.get("tax_factor")));
-		if (s(attributes, "shape").equals("round")) numerator = numerator.multiply(frozenDecimal(rates.get("round_factor")));
 		BigDecimal quantity = frozenDecimal(input.get("quantity"));
 		BigDecimal unit = numerator.divide(denominator, 0, RoundingMode.CEILING);
 		BigDecimal amount = unit.multiply(quantity).setScale(0, RoundingMode.CEILING);
@@ -562,31 +602,65 @@ class EquipmentPricingEngineTests {
 		return new BigDecimal(Objects.requireNonNull(value).toString());
 	}
 
+	/** 两个旧别名曾跨系列选 HTF；新口径限定 SWF。用源表指定工况及逐项独立核算值更新预期，不读取实际结果。 */
+	private static void applyConfirmedFanAliases(String name, Map<String, Object> quote,
+			List<Map<String, Object>> resources, Map<String, Object> expected) {
+		boolean gxf = name.equals("parse-斜流式风机 GXF-9");
+		if (!gxf && !name.equals("parse-风机 HL3-2A-NO6A")) return;
+		var catalog = resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog"))
+				.map(r -> map(r.get("body"))).findFirst().orElseThrow();
+		var point = list(catalog.get("fan_points")).stream().filter(p -> s(p, "id").equals(gxf ? "swf:56" : "swf:26")).findFirst().orElseThrow();
+		var body = list(catalog.get("fan_bodies")).stream().filter(p -> s(p, "id").equals(gxf ? "body:SWF:9" : "body:SWF:6")).findFirst().orElseThrow();
+		var motor = list(catalog.get("motors")).stream().filter(p -> s(p, "id").equals(gxf ? "motor:32:4" : "motor:28:1")).findFirst().orElseThrow();
+		String metal = gxf ? "361.5160500" : "165.8720700", other = gxf ? "325.5850" : "194.20200";
+		BigDecimal cost = frozenDecimal(metal).add(frozenDecimal(other)).add(frozenDecimal(motor.get("cost")));
+		var row = list(expected.get("rows")).get(0);
+		map(row.get("detail")).putAll(obj("selected_fan", point, "fan_cost", obj("body", body, "motor", motor,
+				"material_cost", metal, "body_other_cost", other, "motor_cost", motor.get("cost"), "steel_price", "4300"),
+				"substituted", !gxf, "selection_note", gxf ? "" : "按风量、风压选择有完整成本的最小合格规格"));
+		assertEquals(false, map(quote.get("equipment_options")).get("include_freight"));
+		assertEquals(false, map(quote.get("equipment_options")).get("tax_included"));
+		String supply = frozenQuotient(cost, new BigDecimal("0.75"));
+		BigDecimal unit = cost.divide(new BigDecimal("0.75"), 0, RoundingMode.CEILING);
+		BigDecimal quantity = frozenDecimal(list(quote.get("rows")).get(0).get("quantity"));
+		BigDecimal amount = unit.multiply(quantity);
+		row.putAll(obj("unit_cost", cost.toPlainString(), "supply_unit_unrounded", supply,
+				"supply_amount_unrounded", frozenQuotient(cost.multiply(quantity), new BigDecimal("0.75")),
+				"unit_price", unit.toPlainString(), "amount", amount.toPlainString(), "body_amount", amount.toPlainString()));
+		var values = List.of(cost.toPlainString(), supply, supply, "0", unit.toPlainString(), amount.toPlainString());
+		var trace = list(row.get("trace"));
+		assertEquals(values.size(), trace.size());
+		for (int i = 0; i < trace.size(); i++) trace.get(i).put("value", values.get(i));
+		updateFrozenEquipmentTotal(expected);
+	}
+
 	private static String frozenQuotient(BigDecimal numerator, BigDecimal denominator) {
 		return numerator.divide(denominator, new MathContext(48, RoundingMode.HALF_EVEN)).toPlainString();
 	}
 
 	/**
-	 * 仅此正压口用例改为用户此次确认的源表规则：整体高 2050、大尺寸成本、70 元/㎡面板。
+	 * 仅此正压口用例改为已确认规则：整体高2050、大尺寸成本、70元/㎡面板，长边超2000增加一个20元机构。
 	 * 数值由源表逐项独立核算，冻结 Python 文件及其余用例保持原样，不从实际结果生成预期。
 	 */
 	private static void applyConfirmedPressureSupplyCost(Map<String, Object> expected) {
 		var row = list(expected.get("rows")).get(0);
-		row.putAll(obj("unit_cost", "200.440906083", "supply_unit_unrounded", "267.254541444",
-				"supply_amount_unrounded", "534.509082888", "unit_price", "268", "amount", "536", "body_amount", "536"));
+		String unit = text(n("220.440906083").divide(n("0.75"), MC));
+		String supplyAmount = text(n("220.440906083").multiply(n(2)).divide(n("0.75"), MC));
+		row.putAll(obj("unit_cost", "220.440906083", "supply_unit_unrounded", unit,
+				"supply_amount_unrounded", supplyAmount, "unit_price", "294", "amount", "588", "body_amount", "588"));
 		map(row.get("attributes")).put("height", "2050");
 		map(map(row.get("detail")).get("components")).putAll(obj("multi_frame", "54.5771250",
 				"multi_blade", "14.838394833", "labor", "31", "link", "1.0975475", "shaft", "6.6",
 				"consumables", "4.5875", "multi_brace", "5.63787", "multi_back", "1.54546875",
-				"mechanism", "20", "splice", "0", "panel", "60.557"));
+				"mechanism", "40", "splice", "0", "panel", "60.557"));
 		var trace = list(row.get("trace"));
-		var values = List.of("200.440906083", "267.254541444", "267.254541444", "0", "268", "536");
+		var values = List.of("220.440906083", unit, unit, "0", "294", "588");
 		assertEquals(values.size(), trace.size());
 		for (int i = 0; i < values.size(); i++)
 			trace.get(i).put("value", values.get(i));
 		for (String field : List.of("subtotal", "material_total", "equipment_material_total", "total", "before_payment_total"))
-			expected.put(field, "536");
-		map(map(expected.get("fees")).get("equipment_freight")).put("equipment_subtotal", "536");
+			expected.put(field, "588");
+		map(map(expected.get("fees")).get("equipment_freight")).put("equipment_subtotal", "588");
 	}
 
 	// 只兼容这个旧缺成本提示增加的两个已知原因，其余原因、待确认状态及所有金额仍逐项核对。

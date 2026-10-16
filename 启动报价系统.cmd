@@ -1,7 +1,7 @@
 @echo off
-rem Build and start local quotation services, then open the web page.
+rem Daily start: rebuild changed local sources, then start/reuse healthy services.
 cd /d "%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Start-Local.ps1" -Build
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Start-Local.ps1" -AutoUpdate
 if errorlevel 1 (
   echo Startup failed. See work\local\logs for details.
   pause

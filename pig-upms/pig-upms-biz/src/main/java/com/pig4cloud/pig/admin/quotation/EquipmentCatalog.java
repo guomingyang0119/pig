@@ -63,6 +63,7 @@ public final class EquipmentCatalog {
 	 *
 	 */
 	private static void validateBody(Map<String, Object> b) {
+		AcousticRegionalCost.validate(b);
 		Map<String, Object> rates = map(b.get("rates"));
 		// 两个钢号允许暂空以继续服务其他产品；旧未分钢号价格仅保留历史，不参与新报价。
 		for (String grade : List.of("201", "304"))
@@ -135,9 +136,10 @@ public final class EquipmentCatalog {
 			if (!materials.add(s(row, "material") + ":" + n(row.get("thickness")).stripTrailingZeros().toPlainString()))
 				throw new RuleException("同材质板厚只能配置一条吨价");
 		}
-		// 风机工况需具备机号、风量、风压、转速、功率和极数；单双速用功率/极数列表表达。
+		// 新版每个配置的各档闭区间必须完整，禁止混入旧单点记录。
+		boolean range = FanRangeSelector.enabled(b);
 		for (Map<String, Object> row : list(b.get("fan_points"))) {
-			for (String key : List.of("size", "airflow", "pressure", "speed"))
+			for (String key : range ? List.of("size") : List.of("size", "airflow", "pressure", "speed"))
 				if (n(row.get(key)).signum() <= 0)
 					throw new RuleException("风机参数不正确：" + s(row, "id") + " / " + key);
 			if (!Set.of("HTFC", "HTF(A)", "SWF").contains(s(row, "family")))
@@ -146,9 +148,23 @@ public final class EquipmentCatalog {
 			if (blank(row.get("model")))
 				throw new RuleException("风机型号及极数不完整");
 			checkNumbers(row.get("poles"), "风机型号及极数不完整");
+			if (range) {
+				if (!FanRangeSelector.consistentModel(row)) throw new RuleException("风机系列、型号与机号不一致：" + s(row, "id"));
+				if (!FanRangeSelector.allowedSize(row)) throw new RuleException("风机机号不在已确认范围内：" + s(row, "id"));
+				var powers = EquipmentFanSelector.numbers(row.get("powers"));
+				if (powers.size() > 2 || powers.size() != EquipmentFanSelector.numbers(row.get("poles")).size())
+					throw new RuleException("风机各档功率和极数必须一一对应");
+				for (String key : powers.size() == 2 ? List.of("airflow", "pressure", "airflow_low", "pressure_low") : List.of("airflow", "pressure")) {
+					if (blank(row.get(key + "_min")) || blank(row.get(key + "_max")) || n(row.get(key + "_min")).signum() <= 0
+							|| n(row.get(key + "_max")).compareTo(n(row.get(key + "_min"))) < 0)
+						throw new RuleException("风机区间缺失或上下限不正确：" + s(row, "id") + " / " + key);
+				}
+				if (blank(row.get("motor_model"))) throw new RuleException("区间配置需要来源电机型号：" + s(row, "id"));
+			}
 		}
 		// 本体公式仅允许钢材吨价、机号和板厚变量，不允许引用未确认的电机或售价。
 		for (Map<String, Object> row : list(b.get("fan_bodies"))) {
+			EquipmentFanSelector.validateThickness(row.get("thickness"));
 			if (n(row.get("steel_price")).signum() <= 0 || n(row.get("size")).signum() <= 0)
 				throw new RuleException("风机本体指标不正确");
 			for (String key : List.of("material_expression", "other_expression"))
@@ -156,8 +172,8 @@ public final class EquipmentCatalog {
 					throw new RuleException("风机本体公式包含未定义变量");
 		}
 		for (Map<String, Object> row : list(b.get("motors"))) {
-			if (n(row.get("cost")).signum() < 0)
-				throw new RuleException("电机成本和参数不完整");
+			if (n(row.get("cost")).signum() <= 0)
+				throw new RuleException("电机成本必须大于0");
 			checkNumbers(row.get("powers"), "电机功率或极数不正确");
 			checkNumbers(row.get("poles"), "电机功率或极数不正确");
 		}

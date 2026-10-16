@@ -93,8 +93,14 @@ public class SysFileController {
 	}
 
 	@PutMapping("/rename")
+	@HasPermission("sys_file_del")
 	public R rename(@RequestBody SysFile sysFile) {
-		return R.ok(sysFileService.updateById(sysFile));
+		if (sysFile.getId() == null || StrUtil.isBlank(sysFile.getOriginal()) || sysFile.getOriginal().length() > 255) {
+			return R.failed("请选择文件并填写255字以内的显示名称");
+		}
+		// 重命名仅改变显示名称，不能经由实体绑定修改存储路径、桶、归属或删除状态。
+		return R.ok(sysFileService.update(Wrappers.<SysFile>lambdaUpdate()
+			.eq(SysFile::getId, sysFile.getId()).set(SysFile::getOriginal, sysFile.getOriginal())));
 	}
 
 	/**
@@ -108,7 +114,8 @@ public class SysFileController {
 			@RequestParam(value = "groupId", required = false) Long groupId,
 			@RequestParam(value = "type", required = false) String type,
 			@RequestParam(value = "fileName", required = false) String fileName) {
-		return sysFileService.uploadFile(file, fileName, dir, groupId, type);
+		// 浏览器上传只能由服务端生成存储名，防止指定已有文件名覆盖他人文件。
+		return sysFileService.uploadFile(file, null, dir, groupId, type);
 	}
 
 	/**
@@ -170,6 +177,7 @@ public class SysFileController {
 	 * @return 包含添加结果的R对象
 	 */
 	@PostMapping("/group/add")
+	@HasPermission("sys_file_del")
 	public R addGroup(@RequestBody SysFileGroup fileGroup) {
 		return R.ok(sysFileService.saveOrUpdateGroup(fileGroup));
 	}
@@ -180,6 +188,7 @@ public class SysFileController {
 	 * @return 包含更新结果的R对象
 	 */
 	@PutMapping("/group/update")
+	@HasPermission("sys_file_del")
 	public R updateGroup(@RequestBody SysFileGroup fileGroup) {
 		return R.ok(sysFileService.saveOrUpdateGroup(fileGroup));
 	}
@@ -190,6 +199,7 @@ public class SysFileController {
 	 * @return 包含删除结果的R对象
 	 */
 	@DeleteMapping("/group/delete/{id}")
+	@HasPermission("sys_file_del")
 	public R updateGroup(@PathVariable Long id) {
 		return R.ok(sysFileService.deleteGroup(id));
 	}
@@ -200,6 +210,7 @@ public class SysFileController {
 	 * @return 包含移动结果的R对象
 	 */
 	@PutMapping("/group/move")
+	@HasPermission("sys_file_del")
 	public R moveFileGroup(@RequestBody SysFileGroupDTO fileGroupDTO) {
 		return R.ok(sysFileService.moveFileGroup(fileGroupDTO));
 	}

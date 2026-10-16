@@ -23,9 +23,20 @@ public final class QuoteData {
 
 	/** 可向报价人员展示的输入或业务规则错误，由接口层转换为失败响应。 */
 	public static class RuleException extends IllegalArgumentException {
+		public final QuoteProblem problem;
 
 		public RuleException(String message) {
 			super(message);
+			problem = null;
+		}
+
+		public RuleException(QuoteProblem problem) {
+			this(problem.message(), problem);
+		}
+
+		public RuleException(String message, QuoteProblem problem) {
+			super(message);
+			this.problem = problem;
 		}
 
 	}

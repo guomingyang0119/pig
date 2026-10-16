@@ -40,7 +40,8 @@ class ImportMappingTests {
 		assertEquals(8, mapping.get("remark"));
 		var rows = list(importer.buildWorkbook(List.of(sheet), null).get("rows"));
 		assertEquals(2, rows.size());
-		assertEquals("风口", rows.get(0).get("name"));
+		assertEquals("单层百叶风口", rows.get(0).get("name"));
+		assertEquals("风口", s(EngineeringImportReview.source(rows.get(0)), "name"));
 		assertEquals("34", rows.get(0).get("quantity"));
 		assertEquals("铝合金", map(rows.get(0).get("attributes")).get("material"));
 		assertEquals("客户原备注", rows.get(0).get("remark"));
@@ -117,10 +118,11 @@ class ImportMappingTests {
 					List.of("1", "防火阀", "70℃ 500×500", "个", "2")));
 			var mapping = map(importer.suggestAuto(source).get("auto_mapping"));
 			assertEquals(1, mapping.get("name"), specification);
-			assertEquals(2, mapping.get("spec"), specification);
+			boolean feature = specification.equals("项目特征描述");
+			assertEquals(2, mapping.get(feature ? "feature_description" : "spec"), specification);
 			assertEquals(4, mapping.get("quantity"), specification);
 			var row = list(importer.buildWorkbook(List.of(source), null).get("rows")).get(0);
-			assertEquals("70℃ 500×500", row.get("spec"));
+			assertEquals(feature ? "" : "70℃ 500×500", row.get("spec"));
 			assertEquals("2", row.get("quantity"));
 		}
 		var ambiguous = sheet(List.of(List.of("物品名称", "材料名称", "规格参数", "项目特征描述", "材料数量", "数量")));

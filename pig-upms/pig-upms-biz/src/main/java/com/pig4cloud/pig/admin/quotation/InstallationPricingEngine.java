@@ -297,7 +297,9 @@ public final class InstallationPricingEngine {
 			return null;
 		}
 		// 风机附带自垂或防雨百叶时只计风机安装，不重复计算百叶安装。
-		boolean fan = EquipmentPricingEngine.classify(row).equals("fan");
+		String equipmentKind = EquipmentPricingEngine.classify(row);
+		boolean fan = equipmentKind.equals("fan") || equipmentKind.equals("purchased")
+				&& !contains(name, "控制柜", "控制箱") && FanModelNames.outsourced(name + " " + s(row, "spec"));
 		if (fan && name.contains("百叶"))
 			return fanProject(row, sx);
 		if (name.contains("防雨百叶"))

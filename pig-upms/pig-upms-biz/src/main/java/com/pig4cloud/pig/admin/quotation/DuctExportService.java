@@ -323,15 +323,22 @@ public final class DuctExportService {
 	 * 优先展示实际选型风机的型号、功率和工况，并列出核实后的附阀规格及每台数量。
 	 * 普通设备保持客户原规格，缺少文本时才由已解析尺寸和型号拼出展示值。
 	 */
+	private static String fanParameterRange(Map<String, Object> point, String key) {
+		return point.containsKey(key + "_min") ? s(point, key + "_min") + "–" + s(point, key + "_max") : s(point, key);
+	}
+
 	static String equipmentSpecification(Map<String, Object> row, Map<String, Object> result) {
 		String pressureSupplySize = PressureSupplyOutlet.specification(row, result);
 		if (pressureSupplySize != null)
 			return pressureSupplySize;
 		var point = map(map(result.get("detail")).get("selected_fan"));
 		if (!point.isEmpty()) {
-			String fan = s(point, "model") + "；功率"
+			String fan = FanModelNames.displayModel(map(result.get("detail"))) + "；功率"
 					+ String.join("/", ((List<?>) point.get("powers")).stream().map(QuoteData::str).toList()) + "kW；风量"
-					+ s(point, "airflow") + "m³/h；风压" + s(point, "pressure") + "Pa；转速" + s(point, "speed") + "r/min";
+					+ fanParameterRange(point, "airflow") + "m³/h；风压" + fanParameterRange(point, "pressure") + "Pa"
+					+ (blank(point.get("speed")) ? "" : "；转速" + s(point, "speed") + "r/min");
+			if (point.containsKey("airflow_low_min")) fan += "；低档风量" + fanParameterRange(point, "airflow_low")
+					+ "m³/h；低档全压" + fanParameterRange(point, "pressure_low") + "Pa";
 			var valve = map(map(result.get("detail")).get("attached_valve"));
 			if (!valve.isEmpty()) {
 				var a = map(valve.get("attributes"));
@@ -546,7 +553,7 @@ public final class DuctExportService {
 				String remark;
 				if (s(r, "equipment_kind").equals("fan")) {
 					var selectedFan = map(detail.get("selected_fan"));
-					String selectedModel = s(selectedFan, "model");
+					String selectedModel = FanModelNames.displayModel(detail);
 					String modelRemark = selectedModel.isEmpty() ? note : "选择型号：" + selectedModel;
 					remark = modelRemark + (sourceRemark.isEmpty() ? "" : (modelRemark.isEmpty() ? "" : "；") + sourceRemark);
 					String requestedSpec = s(source, "spec");
@@ -727,13 +734,17 @@ public final class DuctExportService {
 			return "圆法兰（按客户数量）";
 		if (calculationKind.equals("whole_quote_item"))
 			return s(line, "name") + (process.equals("角钢法兰") ? "（按整单实际米数）" : "（按整单实际数量）");
+		var detail = map(row.get("detail"));
+		if (s(map(map(detail.get("product_rule")).get("body")), "rule_type").equals("combination"))
+			return "组合计价（" + String.join("＋", list(detail.get("components")).stream()
+					.map(part -> s(part, "name") + "×" + s(part, "quantity")).toList()) + "）";
 		String kind = s(row, "equipment_kind");
 		if (kind.isEmpty() && !source.isEmpty())
 			kind = EquipmentPricingEngine.classify(source);
 		if (!kind.isEmpty()) {
 			String label = equipmentLogicLabel(kind, row);
 			if (kind.equals("fan")) {
-				String model = s(map(map(row.get("detail")).get("selected_fan")), "model");
+				String model = FanModelNames.displayModel(map(row.get("detail")));
 				if (!model.isEmpty())
 					label += "；选中型号：" + model;
 			}
@@ -1123,7 +1134,7 @@ public final class DuctExportService {
 			String[] coords = installation ? new String[] { "I1", "I2", "B5", "G5", "B6", "G6", "B7", "G7" }
 					: new String[] { "H1", "H2", "B5", "F5", "B6", "F6", "B7", "F7" };
 			Object[] values = { (review ? "校对-" : "KQ-") + identifier, body.get("quote_date"), body.get("customer"), body.get("project"),
-					body.get("contact"), body.get("delivery_location"), quotationScope(body),
+					body.get("contact"), QuoteRegion.exportLocation(body), quotationScope(body),
 					map(result.get("payment")).get("label") };
 			for (int i = 0; i < coords.length; i++)
 				literal(sheet, coords[i], values[i]);
@@ -1189,6 +1200,8 @@ public final class DuctExportService {
 			wb.setPrintArea(0, 0, columns - 1, 0, uppercase + 6);
 			// 计算明细和隐藏差异基准只属于内部可编辑校对文件，正式客户报价保留单张供货表。
 			if (review) {
+				QuoteExcelParameters.addReviewColumns(wb, sheet, body, result, lines, columns);
+				wb.setPrintArea(0, 0, columns + 2, 0, uppercase + 6);
 				QuoteCalculationDetails.addSheet(wb, body, result, lines, installation);
 				reviewMetadata(wb, lines, context, installation);
 			}
@@ -1242,6 +1255,8 @@ public final class DuctExportService {
 			cell(metadata, i, 0).setCellValue(properties[i][0]);
 			cell(metadata, i, 1).setCellValue(properties[i][1]);
 		}
+		cell(metadata, 8, 0).setCellValue("parameter_format");
+		cell(metadata, 8, 1).setCellValue("main_parameters_v1");
 		String[] headers = { "visible_row", "line_key", "source_row_id", "was_pending", "name", "thickness",
 				"spec", "process", "unit", "quantity", "material_unit", "material_amount", "installation_amount",
 				"line_total", "remark", "scope", "exclude_reason" };
@@ -1259,6 +1274,7 @@ public final class DuctExportService {
 			cell(metadata, row, 3).setCellValue(yes(line.get("pending")));
 			cell(metadata, row, 15).setCellValue(s(line, "scope").isEmpty() ? "quoted" : s(line, "scope"));
 			cell(metadata, row, 16).setCellValue(s(line, "exclude_reason"));
+			cell(metadata, row, 17).setCellValue(s(line, "_excel_parameters"));
 			for (int j = 0; j < fields.length; j++) {
 				String value = s(line, fields[j]);
 				if (!value.isEmpty())

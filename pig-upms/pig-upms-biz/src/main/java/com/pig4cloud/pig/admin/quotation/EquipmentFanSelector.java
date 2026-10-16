@@ -7,8 +7,8 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 
 /**
  * 风机工况筛选与本体、电机成本计算，沿用已核对源表的选型顺序。
- * 风量按 m³/h、风压按 Pa、功率按 kW、转速按 r/min 参与筛选；机号和极数分别匹配本体与电机。
- * 不满足性能、被隔离或缺少完整成本的工况不参与最终选型；无法唯一确定时保留候选供报价员确认。
+ * 新版目录以风量（m³/h）和全压（Pa）闭区间选型，转速只供查阅；机号和电机配置分别匹配本体与电机。
+ * 历史单点版本保留原算法供旧快照复核；新版不使用旧工况补齐缺项，先确定配置再核对成本。
  */
 public final class EquipmentFanSelector {
 
@@ -45,13 +45,15 @@ public final class EquipmentFanSelector {
 		}
 
 		private List<Map<String, Object>> motors(Map<String, Object> point, Map<String, Object> attrs) {
+			String model = blank(point.get("motor_model")) ? s(attrs, "motor_model") : s(point, "motor_model");
 			return motors.computeIfAbsent(new MotorKey(point.get("powers"), point.get("poles"),
-					blank(attrs.get("motor_model")) ? "" : normalize(attrs.get("motor_model"))), ignored ->
+					motorKey(model) + ":" + motorKey(attrs.get("motor_model"))), ignored ->
 				list(catalog.get("motors")).stream()
 					.filter(m -> sameNumbers(m.get("powers"), point.get("powers"))
 							&& sameNumbers(m.get("poles"), point.get("poles"))
-							&& (blank(attrs.get("motor_model"))
-									|| normalize(m.get("model")).equals(normalize(attrs.get("motor_model"))))).toList());
+							&& (!point.containsKey("airflow_min") || motorPairs(m).equals(motorPairs(point)))
+							&& (blank(model) || motorKey(m.get("model")).equals(motorKey(model)))
+							&& (blank(attrs.get("motor_model")) || motorKey(m.get("model")).equals(motorKey(attrs.get("motor_model"))))).toList());
 		}
 	}
 
@@ -69,24 +71,45 @@ public final class EquipmentFanSelector {
 			this.candidates = candidates.stream().limit(50).toList();
 		}
 
+		SelectionException(QuoteProblem problem, List<Map<String, Object>> candidates) {
+			super(problem);
+			this.candidates = candidates.stream().limit(50).toList();
+		}
+
+		SelectionException(String message, QuoteProblem problem, List<Map<String, Object>> candidates) {
+			super(message, problem);
+			this.candidates = candidates.stream().limit(50).toList();
+		}
+
 	}
 
 	/**
-	 * 统一型号大小写、括号、横线和罗马数字，并将 HTF-I/II、SWF-I 的已知写法规整为源表系列。
+	 * 统一型号格式，并将主营资料确认的系列别名转换为现有指标的查表键；原型号另行保留。
 	 *
 	 */
 	public static String normalize(Object value) {
-		return str(value).toUpperCase(Locale.ROOT)
-			.replace('（', '(')
-			.replace('）', ')')
-			.replace('一', '-')
-			.replace('－', '-')
-			.replaceAll("\\s+", "")
-			.replace("Ⅰ", "I")
-			.replace("Ⅱ", "II")
-			.replace("Ⅲ", "III")
-			.replaceFirst("^HTF-(?:II|I)(?=-|$)", "HTF(A)")
-			.replaceFirst("^SWF-I(?=-|$)", "SWF");
+		return FanModelNames.normalize(value);
+	}
+
+	/** 源图 Y/YDT 与价格表 YE2/YD 的前缀映射；不修正机座号或功率冲突。 */
+	static String motorKey(Object value) {
+		String model = normalize(value).replaceFirst("^YE2-", "Y").replaceFirst("^YDT", "YD");
+		int dash = model.lastIndexOf('-');
+		if (dash >= 0 && model.substring(dash + 1).matches("\\d+/\\d+"))
+			model = model.substring(0, dash + 1) + String.join("/", Arrays.stream(model.substring(dash + 1).split("/"))
+					.sorted(Comparator.comparingInt(Integer::parseInt)).toList());
+		return model;
+	}
+
+	static List<String> motorPairs(Map<String, Object> motor) {
+		var powers = (List<?>) motor.get("powers");
+		var poles = (List<?>) motor.get("poles");
+		if (powers == null || poles == null || powers.size() != poles.size())
+			throw new RuleException("电机各档功率和极数必须一一对应");
+		var pairs = new ArrayList<String>();
+		for (int i = 0; i < powers.size(); i++) pairs.add(n(powers.get(i)).stripTrailingZeros().toPlainString()
+				+ ":" + n(poles.get(i)).stripTrailingZeros().toPlainString());
+		return pairs.stream().sorted().toList();
 	}
 
 	// 把功率或极数列表升序标准化；比较时忽略原列表顺序，但不忽略项目个数。
@@ -97,7 +120,7 @@ public final class EquipmentFanSelector {
 	}
 
 	// 电机功率和极数组合必须逐项数值一致，不能按相邻功率或单个档位借价。
-	private static boolean sameNumbers(Object a, Object b) {
+	static boolean sameNumbers(Object a, Object b) {
 		var aa = numbers(a);
 		var bb = numbers(b);
 		if (aa.size() != bb.size())
@@ -136,9 +159,9 @@ public final class EquipmentFanSelector {
 			return n(galvanized);
 		String grade = m.contains("304") ? "304" : m.contains("201") ? "201" : "";
 		if (grade.isEmpty())
-			throw new RuleException("请明确材料为镀锌、201或304不锈钢");
+			throw new RuleException(new QuoteProblem("fan_material_required", "parameters", "请明确材料为镀锌、201或304不锈钢", "", List.of("material")));
 		if (blank(thickness))
-			throw new RuleException("不锈钢成本查价需要对应板厚");
+			throw new RuleException(new QuoteProblem("fan_thickness_required", "cost", "不锈钢成本查价需要对应板厚", "", List.of("thickness")));
 		var matches = list(catalog.get("materials")).stream()
 			.filter(x -> s(x, "material").equals(grade) && n(x.get("thickness")).compareTo(n(thickness)) == 0)
 			.toList();
@@ -160,8 +183,9 @@ public final class EquipmentFanSelector {
 		return cost(point, catalog, attrs, price, new CostLookup(catalog));
 	}
 
-	private static Cost cost(Map<String, Object> point, Map<String, Object> catalog, Map<String, Object> attrs,
+	static Cost cost(Map<String, Object> point, Map<String, Object> catalog, Map<String, Object> attrs,
 			Map<String, Object> price, CostLookup lookup) {
+		validateThickness(attrs.get("thickness"));
 		boolean supplement = FanPriceSupplement.applies(price, point, catalog, attrs);
 		if (supplement && !blank(price.get("unit_cost")))
 			return new Cost(n(price.get("unit_cost")), obj("price_supplement", price, "confirmed_unit_cost", price.get("unit_cost"),
@@ -176,12 +200,15 @@ public final class EquipmentFanSelector {
 		var motors = lookup.motors(point, attrs);
 		if (!motorSupplement && motors.isEmpty())
 			throw new RuleException("所选功率及极数组合缺少电机价");
-		if (!motorSupplement && motors.stream().map(m -> List.of(s(m, "model"), s(m, "cost"))).distinct().count() != 1)
-			throw new RuleException("同功率极数对应多个电机，请明确电机型号");
+		if (!motorSupplement && motors.stream().anyMatch(m -> n(m.get("cost")).signum() <= 0))
+			throw new RuleException("电机成本必须大于0，请核对电机价格");
+		if (!motorSupplement && motors.stream().map(m -> List.of(motorKey(m.get("model")), n(m.get("cost")).stripTrailingZeros().toPlainString())).distinct().count() != 1)
+			throw new RuleException(new QuoteProblem("fan_motor_required", "cost", "同功率极数对应多个电机，请明确电机型号", "", List.of("motor_model")));
 		var motor = motorSupplement ? obj("model", price.get("motor_model"), "cost", price.get("motor_cost"),
 				"powers", point.get("powers"), "poles", point.get("poles")) : motors.get(0);
 		// 行内板厚优先于本体默认；没有板厚时公式用 1 占位，不锈钢查价仍要求真实板厚。
 		Object thickness = blank(attrs.get("thickness")) ? body.get("thickness") : attrs.get("thickness");
+		validateThickness(thickness);
 		var env = obj("size", n(body.get("size")), "thickness", blank(thickness) ? ONE : n(thickness), "steel_price",
 				bodySupplement ? ZERO : materialPrice(catalog, attrs.get("material"), thickness, body.get("steel_price")));
 		var metal = bodySupplement ? ZERO : DecimalFormula.evaluate(s(body, "material_expression"), env);
@@ -193,6 +220,12 @@ public final class EquipmentFanSelector {
 		if (supplement) detail.put("price_supplement", price);
 		if (bodySupplement) detail.put("confirmed_body_cost", price.get("body_cost"));
 		return new Cost(add(metal, other, n(motor.get("cost"))), detail);
+	}
+
+	static void validateThickness(Object thickness) {
+		if (!blank(thickness) && n(thickness).signum() <= 0)
+			throw new RuleException(new QuoteProblem("fan_thickness_invalid", "parameters", "风机板厚必须大于0",
+					"请填写有效板厚。", List.of("thickness")));
 	}
 
 	// 把已算出成本的候选还原为工况记录，交给工作台解释待确认原因。
@@ -229,11 +262,17 @@ public final class EquipmentFanSelector {
 	}
 
 	static Cost select(Map<String, Object> row, Map<String, Object> catalog, Map<String, Object> attrs, CostLookup lookup) {
+		if (FanRangeSelector.enabled(catalog)) return FanRangeSelector.select(row, catalog, attrs, lookup);
 		String requested = normalize(attrs.get("model"));
+		if (FanModelNames.outsourced(s(attrs, "model")))
+			throw new RuleException("该系列为外协风机，请按外购设备维护对应型号的采购成本");
 		String family = List.of("HTFC", "HTF(A)", "SWF").stream().filter(requested::startsWith).findFirst().orElse("");
+		if (requested.isEmpty()) family = FanModelNames.familyFromName(s(row, "name"));
+		if (!requested.isEmpty() && family.isEmpty())
+			throw new SelectionException("客户指定的风机系列没有匹配资料，不能自动更换系列", List.of());
 		List<BigDecimal> requestedPowers = blank(attrs.get("power")) ? List.of() : powers(s(attrs, "power"));
 		if (requestedPowers.stream().anyMatch(p -> p.signum() <= 0))
-			throw new RuleException("需求功率必须大于0");
+			throw new RuleException(new QuoteProblem("fan_power_invalid", "parameters", "需求功率必须大于0", "", List.of("power")));
 		// 备注明确写某 kW 单价时覆盖功率需求，并记录原文识别结果供内部核对。
 		Matcher override = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:KW|千瓦)\\s*单价")
 			.matcher(s(row, "remark").toUpperCase(Locale.ROOT));
@@ -245,7 +284,7 @@ public final class EquipmentFanSelector {
 			.replace("Ⅱ", "II");
 		// 双速由多档功率、文字或原型号识别；人工 dual_speed 可以明确覆盖，HTFC 的特定尾号仍表示双速组别。
 		boolean dual = requestedPowers.size() > 1 || full.contains("双速")
-				|| Pattern.compile("(?:HTF|SWF)-II(?:-|$)").matcher(raw).find();
+				|| FanModelNames.dual(raw);
 		if (!blank(attrs.get("dual_speed")))
 			dual = Set.of("true", "1", "是", "双速").contains(s(attrs, "dual_speed").toLowerCase(Locale.ROOT));
 		if (requested.startsWith("HTFC-") && requested.matches(".*-[12]$"))
@@ -257,12 +296,19 @@ public final class EquipmentFanSelector {
 			if (!blank(attrs.get(k)))
 				lows.put(k, n(attrs.get(k)));
 		if ((flow != null && flow.signum() <= 0) || (pressure != null && pressure.signum() <= 0))
-			throw new RuleException("风量、风压必须大于0");
-		if (requested.isEmpty() && requestedPowers.isEmpty() && (flow == null || pressure == null))
-			throw new SelectionException("无型号、功率时需同时提供风量和风压", List.of());
-		if (requested.isEmpty() && !requestedPowers.isEmpty() && (flow == null || pressure == null)
-				&& blank(attrs.get("size")))
-			throw new SelectionException("仅功率不能确定风机，请补型号或风量、风压", List.of());
+			throw new RuleException(new QuoteProblem("fan_performance_invalid", "parameters", "风量、风压必须大于0", "", List.of("airflow", "pressure")));
+		if (requested.isEmpty() && (flow == null || pressure == null) && (requestedPowers.isEmpty() || blank(attrs.get("size")))) {
+			List<String> known = new ArrayList<>(), missing = new ArrayList<>();
+			if (flow == null) missing.add("风量");
+			else known.add("风量" + text(flow) + (lows.containsKey("airflow_low") ? "/" + text(n(lows.get("airflow_low"))) : "") + "m³/h");
+			if (pressure == null) missing.add("风压");
+			else known.add("风压" + text(pressure) + "Pa");
+			if (!requestedPowers.isEmpty()) known.add("功率" + String.join("/", requestedPowers.stream().map(QuoteData::text).toList()) + "kW");
+			String message = (known.isEmpty() ? "" : "已识别" + String.join("、", known) + "；")
+					+ "缺少" + String.join("、", missing) + "，请补齐或提供明确型号，暂不能自动选型";
+			throw new SelectionException(new QuoteProblem("fan_performance_required", "parameters", message, "",
+					missing.stream().map(field -> field.equals("风量") ? "airflow" : "pressure").toList()), List.of());
+		}
 		if (!requested.isEmpty() && family.isEmpty() && (flow == null || pressure == null))
 			throw new SelectionException("其他系列重选科庆型号需要风量和风压", List.of());
 		String group = dual && requested.startsWith("HTFC-") && requested.matches(".*-[12]$")
@@ -270,6 +316,7 @@ public final class EquipmentFanSelector {
 		// 先筛性能：同系列、单双速、分组、风量/风压下限、低档工况、转速以及各档功率要求。
 		List<Map<String, Object>> candidates = new ArrayList<>();
 		List<Map<String, Object>> speedReferences = new ArrayList<>();
+		Set<String> missingLowData = new LinkedHashSet<>();
 		for (var p : list(catalog.get("fan_points"))) {
 			if (yes(p.get("quarantined")) || (!family.isEmpty() && !s(p, "family").equals(family)))
 				continue;
@@ -277,10 +324,6 @@ public final class EquipmentFanSelector {
 				continue;
 			if (flow != null && n(p.get("airflow")).compareTo(flow) < 0
 					|| pressure != null && n(p.get("pressure")).compareTo(pressure) < 0)
-				continue;
-			if (lows.entrySet()
-				.stream()
-				.anyMatch(e -> blank(p.get(e.getKey())) || n(p.get(e.getKey())).compareTo(n(e.getValue())) < 0))
 				continue;
 			List<BigDecimal> pp = new ArrayList<>(numbers(p.get("powers")));
 			Collections.reverse(pp);
@@ -296,7 +339,13 @@ public final class EquipmentFanSelector {
 				if (!ok)
 					continue;
 			}
-			if (!blank(attrs.get("speed")) && (blank(p.get("speed")) || n(p.get("speed")).compareTo(n(attrs.get("speed"))) != 0)) {
+			boolean speedMismatch = !blank(attrs.get("speed")) && (blank(p.get("speed")) || n(p.get("speed")).compareTo(n(attrs.get("speed"))) != 0);
+			if (lows.entrySet().stream().anyMatch(e -> blank(p.get(e.getKey())) || n(p.get(e.getKey())).compareTo(n(e.getValue())) < 0)) {
+				// 仅记录其余条件已满足的资料缺项，不能把目录缺低档数据说成客户没填。
+				if (!speedMismatch) for (String key : lows.keySet()) if (blank(p.get(key))) missingLowData.add(key);
+				continue;
+			}
+			if (speedMismatch) {
 				var reference = new LinkedHashMap<>(p);
 				reference.put("requirement_mismatches", "转速：客户要求" + s(attrs, "speed") + "r/min，参考候选"
 						+ (blank(p.get("speed")) ? "未提供转速" : s(p, "speed") + "r/min"));
@@ -308,9 +357,18 @@ public final class EquipmentFanSelector {
 		if (candidates.isEmpty() && !speedReferences.isEmpty())
 			throw new SelectionException("没有满足客户转速" + s(attrs, "speed")
 					+ "r/min的科庆参数；以下仅为其余性能条件满足的参考候选，转速不符，须报价人员核实客户要求或批准替代后再试算", speedReferences);
-		if (candidates.isEmpty())
-			throw new SelectionException(lows.isEmpty() ? "没有满足风量、风压、功率及单双速要求的科庆参数，请核实需求" : "需核实双速高低档风量/风压配对数据",
-					List.of());
+		if (candidates.isEmpty()) {
+			String message = lows.isEmpty() ? "没有满足风量、风压、功率及单双速要求的科庆参数，请核实需求" : unmatchedDualReason(row, attrs, missingLowData);
+			boolean reversed = !FanSpeedParameters.confirmed(row, attrs) && List.of("airflow", "pressure").stream().anyMatch(key ->
+					!blank(attrs.get(key)) && !blank(attrs.get(key + "_low")) && n(attrs.get(key)).compareTo(n(attrs.get(key + "_low"))) < 0);
+			String code = reversed ? "fan_pairing_order" : !missingLowData.isEmpty() ? "fan_catalog_incomplete" : "fan_no_match";
+			String action = reversed ? "按客户清单核对两档；整组反序时交换高低档，单项有误时原位修改。"
+					: "客户参数无误时无需反复修改。可填写已核实的整台采购成本，或由负责人在指标管理补齐并发布资料后重新匹配。";
+			String explanation = reversed ? message.split("。", 2)[0] : !missingLowData.isEmpty()
+					? "系统风机资料缺少" + String.join("、", missingLowData.stream().map(k -> k.equals("airflow_low") ? "低速档风量" : "低速档风压").toList()) + "，暂不能验证客户要求"
+					: "系统暂未匹配到满足当前型号系列、单双速、功率及各档风量/风压的风机资料";
+			throw new SelectionException(message, new QuoteProblem(code, "selection", explanation, action, List.of()), List.of());
+		}
 		// 补价仅从已校验规则快照读取，并严格限定有效配置，保留性能筛选和人工候选核对。
 		var price = map(map(map(row.get("_product_rule_resource")).get("body")).get("fan_price"));
 		if (!price.isEmpty()) {
@@ -320,17 +378,22 @@ public final class EquipmentFanSelector {
 		// 性能通过后再算完整成本；缺本体公式或电机价格的工况不能成为可售候选。
 		List<Choice> eligible = new ArrayList<>();
 		Set<String> costIssues = new LinkedHashSet<>();
+		Set<String> costFields = new LinkedHashSet<>();
 		for (var p : candidates) {
 			try {
 				eligible.add(new Choice(p, cost(p, catalog, attrs, price, lookup)));
 			}
 			catch (RuleException e) {
-				costIssues.add(e.getMessage()); }
+				costIssues.add(e.getMessage());
+				if (e.problem != null) costFields.addAll(e.problem.requiredFields()); }
 		}
 		if (eligible.isEmpty())
-			throw new SelectionException("符合性能的候选均缺少有效本体或电机成本，需补齐价格：" + String.join("；", costIssues), candidates);
+			throw new SelectionException(new QuoteProblem("fan_cost_missing", "cost",
+					"符合性能的候选均缺少有效本体或电机成本，需补齐价格：" + String.join("；", costIssues),
+					"补齐对应本体或电机成本并发布，或填写已核实采购成本后重新试算。", new ArrayList<>(costFields)), candidates);
 		// 优先保留与原型号一致的合格工况；无原型号时，人工机号可缩小候选范围。
-		var preferred = eligible.stream().filter(x -> normalize(x.point.get("model")).equals(requested)).toList();
+		boolean dualModel = dual;
+		var preferred = eligible.stream().filter(x -> FanModelNames.sameModel(s(x.point, "model"), requested, dualModel)).toList();
 		boolean substituted = !requested.isEmpty() && preferred.isEmpty();
 		if (!preferred.isEmpty())
 			eligible = new ArrayList<>(preferred);
@@ -397,6 +460,23 @@ public final class EquipmentFanSelector {
 						"power_override", overridePower,
 						"substituted", substituted, "selection_path",
 						!requested.isEmpty() || !requestedPowers.isEmpty() ? "main" : "performance"));
+	}
+
+	/** 仅解释未匹配原因，不自动重排客户参数，也不放宽实际选型条件。 */
+	private static String unmatchedDualReason(Map<String, Object> row, Map<String, Object> attrs, Set<String> missingLowData) {
+		var reversed = new ArrayList<String>();
+		for (String key : List.of("airflow", "pressure")) {
+			if (!FanSpeedParameters.confirmed(row, attrs) && !blank(attrs.get(key)) && !blank(attrs.get(key + "_low"))
+					&& n(attrs.get(key)).compareTo(n(attrs.get(key + "_low"))) < 0)
+				reversed.add("高速档" + (key.equals("airflow") ? "风量" : "风压") + s(attrs, key) + "小于低速档" + s(attrs, key + "_low"));
+		}
+		if (!reversed.isEmpty()) return "高低档顺序待核对：" + String.join("；", reversed)
+				+ "。请按客户清单逐档核对；若整组为低速/高速顺序，可点击“交换高低档”，否则在原位置修改对应参数。";
+		String action = "参数无误时，可使用已有成本模板或补充已核实的整台采购成本。";
+		if (!missingLowData.isEmpty()) return "系统风机资料缺少"
+				+ String.join("、", missingLowData.stream().map(k -> k.equals("airflow_low") ? "低速档风量" : "低速档风压").toList())
+				+ "，暂不能验证客户要求；请补齐系统资料。" + action;
+		return "系统暂无同时满足当前型号系列、单双速、功率及各档风量/风压的风机资料。" + action;
 	}
 
 }

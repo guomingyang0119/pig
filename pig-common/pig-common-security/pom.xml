@@ -33,6 +33,11 @@
 
 
     <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!--工具类核心包-->
         <dependency>
             <groupId>com.pig4cloud</groupId>

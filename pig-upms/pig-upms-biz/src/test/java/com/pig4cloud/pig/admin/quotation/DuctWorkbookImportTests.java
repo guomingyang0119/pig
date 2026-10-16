@@ -21,15 +21,18 @@ class DuctWorkbookImportTests {
 		return obj("name", name, "rows", rows);
 	}
 
-	/** 验证两表均出现角码汇总时阻断导入，并同时指出工作表名称，要求人工合并避免重复收费。 */
+	/** 跨表同类配件保留原位置、进入待确认，不能静默覆盖或累计。 */
 	@Test
 	void sameAccessorySummaryInTwoWorksheetsMustNotBeOverwrittenOrDoubleCharged() {
-		var values = List.of(List.of("产品名称", "工程量", "单位"), List.of("角码", "20", "个"));
+		var values = List.of(List.of("产品名称", "工程量", "单位"), List.of("角码", "20", "个"), List.of("风管", "10", "㎡"));
 		var first = sheet("清单一", values);
 		var second = sheet("清单二", values);
-		String error = assertThrows(RuleException.class, () -> importer.buildWorkbook(List.of(first, second), null))
-			.getMessage();
-		assertTrue(error.contains("清单一") && error.contains("清单二") && error.contains("相同配件汇总"));
+		var built = importer.buildWorkbook(List.of(first, second), null);
+		var options = map(built.get("duct_options"));
+		assertEquals("", options.get("corner_count"));
+		var group = list(options.get("accessory_review")).get(0);
+		assertEquals(List.of("清单一", "清单二"), list(group.get("rows")).stream().map(r -> r.get("source_sheet")).toList());
+		assertEquals("pending", group.get("mode"));
 	}
 
 	/** 验证只有数量列的角码、卡条和角钢汇总可提取为整单辅材数量/米数。 */

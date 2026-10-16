@@ -15,9 +15,11 @@ CREATE TABLE IF NOT EXISTS quote_catalog (
 CREATE TABLE IF NOT EXISTS quote_order (
   id varchar(32) PRIMARY KEY, family varchar(32) NOT NULL, version int NOT NULL,
   owner_id bigint NOT NULL, body longtext NOT NULL, result longtext NULL,
+  list_body text NULL, list_result text NULL,
   state varchar(16) NOT NULL, revision int NOT NULL DEFAULT 1,
   created_at datetime NOT NULL, updated_at datetime NOT NULL,
-  UNIQUE KEY uk_quote_order_version(family,version), KEY idx_quote_order_owner(owner_id,state)
+  UNIQUE KEY uk_quote_order_version(family,version), KEY idx_quote_order_owner(owner_id,state),
+  KEY idx_quote_order_updated(updated_at,id), KEY idx_quote_order_owner_updated(owner_id,updated_at,id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报价单及计算快照';
 -- 客户清单解析与回导预览记录，owner_id用于上传文件归属校验。
 -- parsed保存工作表、来源证据及差异；先预览后确认，避免上传文件直接覆盖当前报价。

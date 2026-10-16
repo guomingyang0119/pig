@@ -26,15 +26,15 @@ spring:
               uri: lb://pig-auth
               predicates:
                 - Path=/auth/**
-            # AI客户资料整理耗时较长，优先匹配此报价导入路由并使用10分钟响应超时。
+            # AI导入及歧义行辅助优先匹配；覆盖主备各600秒的最大时限及返回开销。
             # 其他报价操作继续走普通admin路由的响应超时。
             - id: pig-upms-ai-import
               uri: lb://pig-upms-biz
               predicates:
-                - Path=/admin/quotation/ai-imports
+                - Path=/admin/quotation/ai-imports,/admin/quotation/quotes/*/ai-assist
               order: -1
               metadata:
-                response-timeout: 600000
+                response-timeout: 1230000
             - id: pig-upms-biz
               uri: lb://pig-upms-biz
               predicates:

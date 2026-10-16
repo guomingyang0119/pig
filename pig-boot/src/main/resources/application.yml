@@ -1,5 +1,7 @@
 server:
   port: 9999
+  # 内部请求校验必须保留实际连接地址；公网代理负责清除 from 请求头。
+  forward-headers-strategy: none
   servlet:
     context-path: /admin
 

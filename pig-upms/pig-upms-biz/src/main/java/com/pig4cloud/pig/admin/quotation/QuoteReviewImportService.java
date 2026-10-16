@@ -12,7 +12,7 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 
 /**
  * 读取试算后由报价员完善金额的可编辑校对版，并生成回导差异和付款前汇总。
- * 本流程处理人工价格，区别于 AI 清单回导；文件身份及修订号必须匹配当前报价，写回由报价服务确认完成。
+ * 同时读取主表参数修改供报价服务重新试算；人工价格仍独立处理，文件身份和修订号必须匹配当前报价。
  */
 final class QuoteReviewImportService {
 
@@ -62,6 +62,9 @@ final class QuoteReviewImportService {
 			Sheet visible = wb.getSheet(properties.get("visible_sheet"));
 			if (visible == null)
 				throw new RuleException("校对版工作表已被删除或改名");
+			if (DuctExportService.TEMPLATE_VERSION.equals(properties.get("template_version")) && "main_parameters_v1".equals(properties.get("parameter_format"))
+					&& (visible.getRow(8) == null || !QuoteExcelParameters.HEADER.equals(cellText(visible.getRow(8).getCell(columns), evaluator))))
+				throw new RuleException("报价参数列已被删除或改名，请保留导出时的列结构");
 			List<Map<String, Object>> lines = new ArrayList<>(), changes = new ArrayList<>(), restorations = new ArrayList<>();
 			BigDecimal materialTotal = ZERO, equipmentFreightTotal = ZERO, installationTotal = ZERO;
 			boolean equipmentFreightIncluded = false;
@@ -126,6 +129,19 @@ final class QuoteReviewImportService {
 				}
 				boolean changed = false, priceChanged = false;
 				List<Map<String, Object>> rowChanges = new ArrayList<>();
+				if (visible.getRow(8) != null && QuoteExcelParameters.HEADER.equals(cellText(visible.getRow(8).getCell(columns), evaluator))) {
+					if (!blank(current.get("source_row_id")) && !s(current, "source_row_id").equals(cellText(source.getCell(columns + 3), evaluator)))
+						throw QuoteExcelParameters.invalid(visibleRow, "产品关联ID不一致，请勿排序或替换原产品行");
+					var updates = QuoteExcelParameters.changes(cellText(source.getCell(columns), evaluator), cellText(metaRow.getCell(17), evaluator), visibleRow);
+					if (!updates.isEmpty() && blank(current.get("source_row_id"))) throw QuoteExcelParameters.invalid(visibleRow, "整单费用行不支持填写产品参数");
+					current.put("parameter_updates", updates);
+					for (var entry : updates.entrySet()) {
+						var change = obj("line", visibleRow, "product", current.get("name"), "field", "attributes." + entry.getKey(),
+							"label", QuoteExcelParameters.label(entry.getKey()), "before", cellText(metaRow.getCell(17), evaluator),
+							"after", entry.getValue(), "kind", "manual");
+						rowChanges.add(change); changes.add(change); manualChanges++; changed = true;
+					}
+				}
 				// 补算的单价、金额和清理备注记为派生变化；真正人工改价单独统计，便于确认预览。
 				for (String field : FIELDS) {
 					String before = s(baseline, field), after = s(current, field);
@@ -178,6 +194,8 @@ final class QuoteReviewImportService {
 			BigDecimal beforePayment = add(materialTotal, equipmentFreightIncluded ? ZERO : equipmentFreightTotal,
 					installationTotal);
 			return obj("type", "review_import_v1", "quote_id", expectedQuoteId, "workbook_revision", workbookRevision,
+					"parameter_input_format", "main_parameters_v1".equals(properties.get("parameter_format")),
+					"location_text", cellText(visible.getRow(5) == null ? null : visible.getRow(5).getCell(columns == 10 ? 5 : 6), evaluator),
 					"template_version", properties.get("template_version"), "column_count", columns, "lines", lines,
 					"changes", changes, "scope_restorations", restorations, "change_count", manualChanges, "derived_count", derivedChanges,
 					"changed_row_count", changedRows, "unchanged_count", unchanged,
@@ -249,7 +267,7 @@ final class QuoteReviewImportService {
 	/** 读取隐藏元数据前 8 行的文件格式、报价身份、模板版本及可见工作表信息。 */
 	private static Map<String, String> properties(Sheet metadata, FormulaEvaluator evaluator) {
 		Map<String, String> values = new LinkedHashMap<>();
-		for (int i = 0; i < 8; i++) {
+		for (int i = 0; i < 9; i++) {
 			Row row = metadata.getRow(i);
 			if (row != null)
 				values.put(cellText(row.getCell(0), evaluator), cellText(row.getCell(1), evaluator));

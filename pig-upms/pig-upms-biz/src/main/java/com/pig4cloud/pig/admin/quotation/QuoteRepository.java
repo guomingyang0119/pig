@@ -92,6 +92,8 @@ public class QuoteRepository {
 	Map<String, Object> decode(Map<String, Object> value) {
 		Map<String, Object> result = new LinkedHashMap<>();
 		value.forEach((k, v) -> result.put(k.toLowerCase(Locale.ROOT), v));
+		result.remove("list_body");
+		result.remove("list_result");
 		for (String key : List.of("body", "result", "parsed"))
 			if (result.get(key) instanceof String s)
 				result.put(key, object(s));
@@ -122,6 +124,31 @@ public class QuoteRepository {
 	 */
 	public int update(String sql, Object... args) {
 		return jdbc.update(sql, args);
+	}
+
+	/** 同一条 SQL 写入正文/结果及列表摘要，事务回滚时两者一并回滚。 */
+	public int updateOrder(String id, Map<String, Object> changes, boolean revision, boolean updatedAt) {
+		List<String> fields = new ArrayList<>();
+		List<Object> args = new ArrayList<>();
+		changes.forEach((key, value) -> {
+			if (!Set.of("body", "result", "state").contains(key)) throw new IllegalArgumentException("Invalid order field");
+			fields.add(key + "=?");
+			args.add(key.equals("state") || value == null ? value : json(value));
+			if (!key.equals("state")) {
+				fields.add("list_" + key + "=?");
+				args.add(value == null ? null : json(key.equals("body") ? QuoteListSummary.body(map(value)) : QuoteListSummary.result(map(value))));
+			}
+		});
+		if (revision) fields.add("revision=revision+1");
+		if (updatedAt) fields.add("updated_at=CURRENT_TIMESTAMP");
+		args.add(id);
+		return jdbc.update("UPDATE quote_order SET " + String.join(",", fields) + " WHERE id=?", args.toArray());
+	}
+
+	public void insertOrder(String id, Object family, int version, Object owner, Map<String, Object> body) {
+		jdbc.update("INSERT INTO quote_order(id,family,version,owner_id,body,list_body,state,revision,created_at,updated_at) "
+				+ "VALUES(?,?,?,?,?,?,'draft',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+				id, family, version, owner, json(body), json(QuoteListSummary.body(body)));
 	}
 
 	/**

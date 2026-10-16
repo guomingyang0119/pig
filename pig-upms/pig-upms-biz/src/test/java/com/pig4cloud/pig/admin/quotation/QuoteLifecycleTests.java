@@ -29,6 +29,127 @@ import static org.junit.jupiter.api.Assertions.*;
  * 通过真实仓储及事务执行服务方法，覆盖多步骤操作之间的数据保留和价格有效性。
  */
 class QuoteLifecycleTests {
+	@Test
+	void electricValveSourceCompletesAiReviewReimportPricingAndFormalExport() throws Exception {
+		var resource = publishEquipment();
+		var source = ElectricValveClassificationTests.normalize("电动对开式多叶调节阀", "electric_control");
+		String id = s(tx(() -> service.createAiDraft(quoter, List.of(source), List.of())), "id");
+		var draft = service.detail(quoter, id);
+		assertEquals("electric_control", attr(list(map(draft.get("body")).get("rows")).get(0), "equipment_kind"));
+		assertThrows(RuleException.class, () -> tx(() -> service.calculate(quoter, id, rev(draft))));
+		byte[] checked;
+		try (var book = WorkbookFactory.create(new ByteArrayInputStream(service.aiStandardWorkbook(quoter, id)));
+				var output = new ByteArrayOutputStream()) {
+			var visible = book.getSheet(AiQuoteImportService.SHEET_NAME).getRow(9);
+			assertEquals("", visible.getCell(40).getStringCellValue());
+			visible.getCell(6).setCellValue(3);
+			book.write(output); checked = output.toByteArray();
+		}
+		var preview = tx(() -> service.previewAiInputImport(quoter, id, checked, "电动阀人工校验.xlsx", n(draft.get("revision")).intValue()));
+		tx(() -> service.applyAiInputImport(quoter, id, s(preview, "import_id"), obj("revision", draft.get("revision"), "review_confirmed", true)));
+		var imported = service.detail(quoter, id);
+		var body = map(imported.get("body"));
+		assertEquals("3", s(list(body.get("rows")).get(0), "quantity"));
+		assertEquals("electric_control", attr(list(body.get("rows")).get(0), "equipment_kind"));
+		assertThrows(RuleException.class, () -> tx(() -> service.calculate(quoter, id, rev(imported))));
+		body.putAll(obj("customer", "电动阀流程验收", "equipment_options", obj("payment_option", "no_install_cash",
+				"tax_included", true, "include_freight", false), "revision", imported.get("revision")));
+		tx(() -> service.save(quoter, id, body));
+		var saved = service.detail(quoter, id);
+		tx(() -> service.action(quoter, id, "approve-ai", obj("revision", saved.get("revision"), "review_confirmed", true)));
+		var calculated = tx(() -> service.calculate(quoter, id, rev(service.detail(quoter, id))));
+		var result = map(calculated.get("result"));
+		var actual = list(result.get("rows")).get(0);
+		assertEquals("priced", actual.get("status"), s(actual, "reason"));
+		assertEquals("35", s(map(actual.get("detail")), "mechanism_base"));
+		var direct = ElectricValveClassificationTests.input("电动调节阀");
+		direct.put("quantity", "3");
+		var expected = new EquipmentPricingEngine().calculateRow(direct, map(resource.get("body")), map(body.get("equipment_options")), resource);
+		assertEquals(expected.get("unit_price"), actual.get("unit_price"));
+		assertEquals(expected.get("amount"), actual.get("amount"));
+		assertTrue(yes(result.get("formal_ready")), result.toString());
+		var exported = tx(() -> service.export(quoter, id, obj("revision", calculated.get("revision"), "kind", "formal")));
+		try (var book = WorkbookFactory.create(new ByteArrayInputStream((byte[]) service.download(quoter, s(exported, "id")).get("content")))) {
+			assertEquals("电动对开式多叶调节阀", book.getSheetAt(0).getRow(9).getCell(1).getStringCellValue());
+		}
+	}
+
+	@Test
+	void pendingAutomaticManualMisclassificationIsRecheckedWithoutChangingStoredOrConfirmedData() throws Exception {
+		String obsolete = "AI建议类型“电动调节阀”与原文主产品“手动调节阀”冲突，已按主产品归类，请核对";
+		String otherIssue = "原文件存在未缓存公式或错误值，请核对";
+		for (String protection : List.of("none", "other-issue", "original-automatic", "manual-kind", "confirmed-source",
+				"approved", "final", "changed-name", "no-proof", "changed-quantity", "candidate")) {
+			var source = ElectricValveClassificationTests.normalize("电动对开式多叶调节阀", "electric_control");
+			String id = s(tx(() -> service.createAiDraft(quoter, List.of(source), List.of())), "id");
+			var stored = repo.find("quote_order", id, false);
+			var body = map(stored.get("body"));
+			var row = list(body.get("rows")).get(0);
+			map(row.get("attributes")).putAll(obj("equipment_kind", "manual", "equipment_kind_source", "rule",
+					"recognition_issue", obsolete, "review_reason", obsolete));
+			AiConfidencePolicy.prove(row, "equipment_kind", "manual", "rule", obj("rule", "builtin:manual"));
+			row.putAll(obj("source_issue", true, "source_issue_reason", obsolete, "source_issue_confirmed", false));
+			if (protection.equals("other-issue")) row.put("source_issue_reason", obsolete + "；" + otherIssue);
+			if (protection.equals("original-automatic")) map(row.get("original")).putAll(obj("source_issue", true, "source_issue_reason", obsolete));
+			if (protection.equals("manual-kind")) AiConfidencePolicy.prove(row, "equipment_kind", "manual", "manual", obj());
+			if (protection.equals("confirmed-source")) row.put("source_issue_confirmed", true);
+			if (protection.equals("approved")) body.put("ai_review_status", "approved");
+			if (protection.equals("changed-name")) row.put("name", "手动对开式多叶调节阀");
+			if (protection.equals("no-proof")) map(AiConfidencePolicy.metadata(row).get("proofs")).clear();
+			if (protection.equals("changed-quantity")) row.put("quantity", "8");
+			if (protection.equals("candidate")) row.put("candidate_id", "人工选型");
+			repo.update("UPDATE quote_order SET body=?,state=? WHERE id=?", repo.json(body), protection.equals("final") ? "final" : "draft", id);
+			var refreshed = service.detail(quoter, id);
+			var actual = list(map(refreshed.get("body")).get("rows")).get(0);
+			boolean corrected = Set.of("none", "other-issue", "original-automatic").contains(protection);
+			assertEquals(corrected ? "electric_control" : "manual", attr(actual, "equipment_kind"), protection);
+			if (corrected) {
+				assertFalse(s(actual, "source_issue_reason").contains(obsolete), protection);
+				assertEquals(protection.equals("other-issue") ? otherIssue : "", s(actual, "source_issue_reason"));
+				assertFalse(yes(actual.get("source_issue_confirmed")));
+				assertTrue(AiConfidencePolicy.correctionReason(actual).contains("电动调节阀"));
+			}
+			assertEquals(body, map(repo.find("quote_order", id, false).get("body")), "只读不改历史快照：" + protection);
+			assertEquals(stored.get("revision"), refreshed.get("revision"));
+		}
+	}
+
+	@Test
+	void repeatedAccessoryDecisionsSurviveSaveAndCannotReplaceOriginalQuantities() throws Exception {
+		byte[] bytes;
+		try (var book = new XSSFWorkbook(); var output = new ByteArrayOutputStream()) {
+			var sheet = book.createSheet("Sheet1");
+			String[][] cells = {{"产品名称", "数量", "单位"}, {"镀锌风管0.75mm", "10", "㎡"},
+				{"30#角铁", "5000", "米"}, {"30#角铁", "700", "米"}};
+			for (int r = 0; r < cells.length; r++) for (int c = 0; c < cells[r].length; c++) {
+				var row = sheet.getRow(r) == null ? sheet.createRow(r) : sheet.getRow(r);
+				row.createCell(c).setCellValue(cells[r][c]);
+			}
+			book.write(output); bytes = output.toByteArray();
+		}
+		var upload = tx(() -> service.upload(quoter, bytes, "重复配件.xlsx"));
+		String id = s(tx(() -> service.create(quoter, obj("pricing_mode", "auto_v1", "import_id", upload.get("id")))), "id");
+		var draft = service.detail(quoter, id);
+		var body = map(draft.get("body"));
+		var options = map(body.get("duct_options"));
+		assertEquals("", options.get("flange_30_meters"));
+		var group = list(options.get("accessory_review")).get(0);
+		group.putAll(obj("mode", "select", "exclude_reason", "第二行已包含"));
+		list(group.get("rows")).get(1).put("included", false);
+		list(group.get("rows")).get(0).putAll(obj("quantity", "1", "source_row", 999));
+		options.put("flange_30_meters", "99999");
+		body.put("revision", draft.get("revision"));
+		tx(() -> service.save(quoter, id, body));
+		var saved = service.detail(quoter, id);
+		var stored = map(map(saved.get("body")).get("duct_options"));
+		assertEquals("5000", stored.get("flange_30_meters"));
+		var savedGroup = list(stored.get("accessory_review")).get(0);
+		assertEquals("select", savedGroup.get("mode"));
+		assertEquals("5000", list(savedGroup.get("rows")).get(0).get("quantity"));
+		assertEquals(3, n(list(savedGroup.get("rows")).get(0).get("source_row")).intValue());
+		assertEquals(false, list(savedGroup.get("rows")).get(1).get("included"));
+		assertEquals(2, list(map(saved.get("body")).get("source_special_rows")).size());
+	}
 
 	private Map<String, Object> confidenceMaterial() {
 		var source = obj("name", "防火阀", "spec", "500×500", "unit", "个", "quantity", "2", "width", "500", "height", "500");
@@ -41,6 +162,35 @@ class QuoteLifecycleTests {
 		scores.putAll(obj("quantity", 60, "width", 70));
 		source.put("ai_confidence", obj("version", "v1", "scores", scores, "values", values, "verified", obj()));
 		return source;
+	}
+
+	@Test
+	void outOfRangeAiQuantityCanBeSavedDownloadedAndCorrectedWithoutLosingOtherRows() throws Exception {
+		var bad=obj("name","防火阀","spec","500×500","unit","个","quantity","10000000000000000000");
+		AiInputReview.refresh(bad);
+		var good=obj("name","止回阀","spec","400×400","unit","个","quantity","3");
+		String id=s(tx(() -> service.createAiDraft(quoter,List.of(bad,good),List.of())),"id");
+		var draft=service.detail(quoter,id);
+		var products=list(map(draft.get("body")).get("rows"));
+		assertEquals(2,products.size());
+		assertEquals("10000000000000000000",s(products.get(0),"quantity"));
+		assertEquals("3",s(products.get(1),"quantity"));
+		assertNull(draft.get("result"));
+		byte[] checked;
+		try(var book=WorkbookFactory.create(new ByteArrayInputStream(service.aiStandardWorkbook(quoter,id)));
+				var output=new ByteArrayOutputStream()) {
+			assertTrue(book.getSheet(AiQuoteImportService.SHEET_NAME).getRow(9).getCell(40).toString().contains("正数"));
+			book.getSheet(AiQuoteImportService.SHEET_NAME).getRow(9).getCell(6).setCellValue("2");
+			book.write(output); checked=output.toByteArray();
+		}
+		var preview=tx(() -> service.previewAiInputImport(quoter,id,checked,"核对.xlsx",n(draft.get("revision")).intValue()));
+		tx(() -> service.applyAiInputImport(quoter,id,s(preview,"import_id"),obj("revision",draft.get("revision"),"review_confirmed",true)));
+		var next=service.detail(quoter,id);
+		var rows=list(map(next.get("body")).get("rows"));
+		assertEquals("2",s(rows.get(0),"quantity"));
+		assertFalse(s(rows.get(0),"source_issue_reason").contains(AiInputReview.PREFIX));
+		assertEquals("3",s(rows.get(1),"quantity"));
+		assertNull(next.get("result"));
 	}
 
 	@Test
@@ -379,6 +529,7 @@ class QuoteLifecycleTests {
 		var dataSource = new DriverManagerDataSource(
 				"jdbc:h2:mem:" + uuid() + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1", "sa", "");
 		JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+		jdbc.execute("CREATE ALIAS JSON_EXTRACT FOR 'com.pig4cloud.pig.admin.quotation.QuotePaginationTests.jsonExtract'");
 		String sql = Files.readString(Path.of("..", "..", "db", "quotation.sql")).split("-- 菜单使用")[0]
 			.replaceAll("(?m)^--.*$", "");
 		for (String statement : sql.split(";"))
@@ -527,15 +678,16 @@ class QuoteLifecycleTests {
 				var normalColor = ((XSSFCellStyle) main.getRow(9).getCell(1).getCellStyle()).getFillForegroundXSSFColor();
 				assertTrue(normalColor == null || !Arrays.equals(red, normalColor.getRGB()));
 				assertEquals("", review.getRow(3).getCell(4).getStringCellValue());
-				assertArrayEquals(red, ((XSSFCellStyle) main.getRow(10).getCell(1).getCellStyle()).getFillForegroundXSSFColor().getRGB());
+				assertArrayEquals(red, ((XSSFCellStyle) main.getRow(10).getCell(3).getCellStyle()).getFillForegroundXSSFColor().getRGB());
 				String reason = review.getRow(4).getCell(4).getStringCellValue();
 				assertTrue(reason.contains("待确认"));
-				assertTrue(reason.contains("宽度"));
+				assertTrue(reason.contains("宽度"), reason);
 				assertEquals("", main.getRow(10).getCell(12).getStringCellValue());
 				for (int r : List.of(9, 10)) for (int c = 7; c <= 11; c++)
 					assertEquals(CellType.BLANK, main.getRow(r).getCell(c).getCellType());
 			}
-			map(products.get(1).get("attributes")).put("width", "500");
+			// 只补宽度后仍缺高度；完整尺寸补齐后才解除输入缺项提醒。
+			map(products.get(1).get("attributes")).putAll(obj("width", "500", "height", "500"));
 			body.put("revision", draft.get("revision"));
 			tx(() -> service.save(quoter, id, body));
 			try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(service.aiStandardWorkbook(quoter, id)))) {
@@ -608,7 +760,7 @@ class QuoteLifecycleTests {
 				var normalColor = ((XSSFCellStyle) main.getRow(9).getCell(1).getCellStyle()).getFillForegroundXSSFColor();
 				assertTrue(normalColor == null || !Arrays.equals(red, normalColor.getRGB()));
 				assertEquals("", review.getRow(3).getCell(4).getStringCellValue());
-				assertArrayEquals(red, ((XSSFCellStyle) main.getRow(10).getCell(1).getCellStyle()).getFillForegroundXSSFColor().getRGB());
+				assertArrayEquals(red, ((XSSFCellStyle) main.getRow(10).getCell(6).getCellStyle()).getFillForegroundXSSFColor().getRGB());
 				assertEquals("", new DataFormatter().formatCellValue(main.getRow(10).getCell(6)));
 				String reason = review.getRow(4).getCell(4).getStringCellValue();
 				assertTrue(reason.contains("待确认"));
@@ -1962,7 +2114,8 @@ class QuoteLifecycleTests {
 	@Test
 	void equipmentSeedIsReadOnlyAndCatalogsHaveIndependentPublicationLifecycle() {
 		assertThrows(ResponseStatusException.class, () -> service.equipmentSeed(quoter));
-		assertEquals(743, list(service.equipmentSeed(leader).get("fan_points")).size());
+		assertEquals(154, list(service.equipmentSeed(leader).get("fan_points")).size());
+		assertEquals("range-v1", service.equipmentSeed(leader).get("fan_selection"));
 		assertTrue(service.resources().isEmpty());
 		var equipment = publishEquipment();
 		publish();
@@ -2027,9 +2180,9 @@ class QuoteLifecycleTests {
 	@Test
 	void fanCandidatePersistsAndExportsActualSelectedPerformance() throws IOException {
 		var catalog = publishEquipment();
-		var row = obj("name", "风机", "category", "风机", "quantity", "1", "unit", "台", "spec", "风量1000 风压100 功率2.2kW", "remark", "客户原备注",
+		var row = obj("name", "单速风机", "category", "风机", "quantity", "1", "unit", "台", "spec", "风量10000 风压350 功率2.2kW", "remark", "客户原备注",
 				"attributes",
-				obj("equipment_kind", "fan", "model", "GXF", "airflow", "1000", "pressure", "100", "power", "2.2"));
+				obj("equipment_kind", "fan", "model", "GXF", "airflow", "10000", "pressure", "350", "power", "2.2"));
 		var q = equipmentQuote("equipment_v1", List.of(row));
 		var r = list(map(q.get("result")).get("rows")).get(0);
 		assertEquals("priced", r.get("status"), str(r.get("reason")));
@@ -2060,9 +2213,8 @@ class QuoteLifecycleTests {
 		try (Workbook wb = WorkbookFactory
 			.create(new ByteArrayInputStream((byte[]) service.download(quoter, s(export, "id")).get("content")))) {
 			String text = workbookText(wb);
-			assertTrue(text.contains(s(selected, "model")) && text.contains("风量" + s(selected, "airflow"))
-					&& text.contains("风压" + s(selected, "pressure")));
-			assertEquals("选择型号：" + s(selected, "model") + "；客户原备注；客户要求规格：风量1000 风压100 功率2.2kW",
+			assertTrue(text.contains(s(selected, "model")) && text.contains("风量9424–15064") && text.contains("风压282–418"));
+			assertEquals("选择型号：" + s(selected, "model") + "；客户原备注；客户要求规格：风量10000 风压350 功率2.2kW",
 					wb.getSheetAt(0).getRow(9).getCell(9).getStringCellValue());
 			assertFalse(text.contains("按风量、风压选择有完整成本的最小合格规格"));
 			assertFalse(text.contains("unit_cost") || text.contains("电机成本") || text.contains("壳体成本"));
