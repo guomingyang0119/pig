@@ -773,6 +773,8 @@ public final class DuctExportService {
 
 	/** 生成设备计价分支中文名称，风口实际类型与备注指定的计价口径分别展示。 */
 	private static String equipmentLogicLabel(String kind, Map<String, Object> row) {
+		if (kind.equals("fire") && !blank(map(row.get("detail")).get("pricing_note")))
+			return s(map(row.get("detail")), "pricing_note");
 		if (kind.equals("louver")) {
 			String type = s(map(row.get("detail")), "louver_type");
 			String basis = s(map(row.get("detail")), "pricing_louver_basis");

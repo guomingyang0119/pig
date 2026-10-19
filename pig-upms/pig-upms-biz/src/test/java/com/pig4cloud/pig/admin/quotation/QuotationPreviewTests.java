@@ -61,7 +61,7 @@ class QuotationPreviewTests {
 					String relative = path.replaceFirst("^/admin/quotation/", "");
 					String[] parts = relative.split("/");
 					byte[] raw = exchange.getRequestBody().readNBytes(DuctImportService.MAX_BYTES + 1);
-					Map<String, Object> data = relative.equals("imports") || raw.length == 0 ? obj()
+					Map<String, Object> data = relative.equals("imports") || relative.matches("quotes/[^/]+/review-imports") || raw.length == 0 ? obj()
 							: json.readValue(raw, Map.class);
 					// 每个模拟HTTP请求均在独立事务内执行，保留业务行锁和多次请求的修订校验。
 					Object response = tx.execute(status -> {
@@ -93,9 +93,12 @@ class QuotationPreviewTests {
 											? service.listQuotes(actor,
 													"archived=true".equals(exchange.getRequestURI().getQuery()))
 											: service.create(actor, data))
-									: method.equals("GET") ? service.detail(actor, id)
+									: method.equals("GET") ? (id.equals("page") ? service.listQuotePage(actor, false, 1, 20, "") : service.detail(actor, id))
 											: method.equals("PUT") ? service.save(actor, id, data)
 													: action.equals("calculate") ? service.calculate(actor, id, data)
+															: action.equals("review-imports") ? (parts.length == 3
+																	? service.previewReviewImport(actor, id, raw, URLDecoder.decode(exchange.getRequestHeaders().getFirst("X-Filename"), StandardCharsets.UTF_8), Integer.parseInt(exchange.getRequestHeaders().getFirst("X-Revision")))
+																	: service.applyReviewImport(actor, id, parts[3], data))
 															: action.equals("export") ? service.export(actor, id, data)
 																	: service.action(actor, id, action, data);
 							default -> throw new RuleException("Unknown verification route");

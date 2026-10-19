@@ -551,6 +551,18 @@ class QuoteLifecycleTests {
 		return transaction.execute(status -> action.get());
 	}
 
+	@Test
+	void deletingAiDraftKeepsImportReferencedByAnotherQuoteFamily() {
+		repo.update("INSERT INTO quote_import(id,owner_id,filename,parsed,created_at) VALUES(?,?,'shared.xlsx',?,CURRENT_TIMESTAMP)",
+				"shared-import", quoter.id(), repo.json(obj("sheets", List.of())));
+		repo.insertOrder("ai-draft", "ai-family", 1, quoter.id(), obj("import_id", "shared-import", "ai_review_status", "pending"));
+		repo.insertOrder("other-draft", "other-family", 1, quoter.id(), obj("import_id", "shared-import"));
+		tx(() -> service.action(quoter, "ai-draft", "delete", obj("revision", 1)));
+		assertNull(repo.find("quote_order", "ai-draft", false));
+		assertNotNull(repo.find("quote_import", "shared-import", false));
+		assertEquals("shared-import", map(repo.find("quote_order", "other-draft", false).get("body")).get("import_id"));
+	}
+
 	/**
 	 * 从已读取记录取得当前revision，模拟页面提交的并发校验字段。
 	 */

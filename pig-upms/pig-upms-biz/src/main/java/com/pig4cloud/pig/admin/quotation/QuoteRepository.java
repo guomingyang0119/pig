@@ -29,7 +29,7 @@ public class QuoteRepository {
 
 	private final ObjectMapper json;
 
-	private final TransactionTemplate exportTransaction;
+	private final TransactionTemplate newTransaction;
 
 	public QuoteRepository(@Qualifier("quotationJdbcTemplate") JdbcTemplate jdbc, ObjectMapper json) {
 		this(jdbc, json, new DataSourceTransactionManager(Objects.requireNonNull(jdbc.getDataSource())));
@@ -40,13 +40,17 @@ public class QuoteRepository {
 			@Qualifier("quotationTransactionManager") PlatformTransactionManager manager) {
 		this.jdbc = jdbc;
 		this.json = json;
-		this.exportTransaction = new TransactionTemplate(manager);
-		this.exportTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+		this.newTransaction = new TransactionTemplate(manager);
+		this.newTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
 	}
 
-	/** 导出只在取得快照及保存文件时使用独立短事务，文件生成期间不占用数据库行锁。 */
+	/** 独立短事务；导出快照和过期导入清理均用它限制持锁时间。 */
+	public <T> T inNewTransaction(Supplier<T> action) {
+		return newTransaction.execute(status -> action.get());
+	}
+
 	public <T> T exportTransaction(Supplier<T> action) {
-		return exportTransaction.execute(status -> action.get());
+		return inNewTransaction(action);
 	}
 
 	/**

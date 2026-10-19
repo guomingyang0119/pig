@@ -85,6 +85,38 @@ def digest(value: str | None) -> str | None:
     return None if canonical is None else hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# 与 QuoteListSummary.body/result 保持相同的轻量列表字段，避免旧库迁入后列表读到 NULL。
+def quote_list_body(value: str) -> str:
+    body = json.loads(value)
+    if not isinstance(body, dict):
+        raise ValueError("报价正文必须是JSON对象")
+    summary = {key: body[key] for key in (
+        "customer", "project", "quote_date", "pricing_mode", "recognition_mode", "include_freight"
+    ) if key in body}
+    for key in ("duct_options", "equipment_options"):
+        options = body.get(key)
+        summary[key] = {"include_freight": options.get("include_freight") if isinstance(options, dict) else None}
+    rows = body.get("rows")
+    summary["row_count"] = len(rows) if isinstance(rows, list) else 0
+    return json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+
+
+def quote_list_result(value: str | None) -> str | None:
+    result = json.loads(value) if value is not None else None
+    if not isinstance(result, dict) or not result:
+        return None
+    summary = {"_summary_present": True}
+    for key in ("total", "pending_count", "engine_version", "product_rule_engine_version",
+                "installation_engine_version", "duct_engine_version", "catalog_bindings",
+                "product_rule_catalog_ids"):
+        if key in result:
+            summary[key] = result[key]
+    bindings = result.get("product_rule_bindings")
+    if "product_rule_catalog_ids" not in result and isinstance(bindings, list) and bindings:
+        summary["product_rule_catalog_ids"] = ["legacy-unverified"]
+    return json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+
+
 # 拆分当前报价建表脚本：忽略整行SQL注释，再按分号分割简单语句。
 def split_sql(script: str) -> list[str]:
     lines = [line for line in script.splitlines() if not line.lstrip().startswith("--")]
@@ -152,6 +184,8 @@ def main() -> None:
     for row in quotes:
         canonical_json(row["body"])
         canonical_json(row["result"])
+        quote_list_body(row["body"])
+        quote_list_result(row["result"])
 
     root = mysql_connection(options)
     with root.cursor() as cursor:
@@ -199,8 +233,8 @@ def main() -> None:
         for row in quotes:
             cursor.execute(
                 "INSERT INTO quote_order"
-                "(id,family,version,owner_id,body,result,state,revision,created_at,updated_at) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "(id,family,version,owner_id,body,result,list_body,list_result,state,revision,created_at,updated_at) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     row["id"],
                     row["family"],
@@ -208,6 +242,8 @@ def main() -> None:
                     options.owner_id,
                     row["body"],
                     row["result"],
+                    quote_list_body(row["body"]),
+                    quote_list_result(row["result"]),
                     row["state"],
                     row["revision"],
                     local_datetime(row["created_at"]),
@@ -219,8 +255,10 @@ def main() -> None:
     with target.cursor(pymysql.cursors.DictCursor) as cursor:
         cursor.execute("SELECT id,body FROM quote_catalog")
         target_catalogs = {row["id"]: row for row in cursor.fetchall()}
-        cursor.execute("SELECT id,body,result FROM quote_order")
+        cursor.execute("SELECT id,body,result,list_body,list_result FROM quote_order")
         target_quotes = {row["id"]: row for row in cursor.fetchall()}
+        cursor.execute("SELECT COUNT(*) AS missing FROM quote_order WHERE list_body IS NULL")
+        missing_list_body = cursor.fetchone()["missing"]
 
     # 提交后按记录ID逐一核对JSON内容，不以行数相同代替报价快照校验。
     failures = []
@@ -230,10 +268,15 @@ def main() -> None:
             failures.append("指标 " + row["id"])
     for row in quotes:
         migrated = target_quotes.get(row["id"])
-        if migrated is None or digest(row["body"]) != digest(migrated["body"]) or digest(row["result"]) != digest(migrated["result"]):
+        if (migrated is None or digest(row["body"]) != digest(migrated["body"])
+                or digest(row["result"]) != digest(migrated["result"])
+                or digest(quote_list_body(row["body"])) != digest(migrated["list_body"])
+                or digest(quote_list_result(row["result"])) != digest(migrated["list_result"])):
             failures.append("报价 " + row["id"])
     target.close()
     source.close()
+    if missing_list_body:
+        failures.append(f"{missing_list_body}份报价缺少列表摘要")
     if failures:
         raise SystemExit("迁移后校验失败：" + "、".join(failures))
 
@@ -245,6 +288,7 @@ def main() -> None:
         "owner_id_mapping": options.owner_id,
         "catalog_count": len(catalogs),
         "quote_count": len(quotes),
+        "missing_list_body": missing_list_body,
         "excluded": ["users", "sessions", "imports", "exports", "audit", "legacy price/rule/candidate resources"],
         "verified": True,
     }

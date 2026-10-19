@@ -203,7 +203,9 @@ function Start-Backend([string]$Name) {
     Assert-LocalExecutableJar $jar
     $serviceEnvironment = $environmentValues.Clone()
     $maximumHeap = if ($entry.Name -eq 'admin') { '2g' } else { '512m' }
-    if ($entry.Name -eq 'register') { $serviceEnvironment.MYSQL_DB = 'pig_config' }
+    if ($entry.Name -eq 'register') {
+        $serviceEnvironment.MYSQL_DB = 'pig_config'
+    }
     if ($entry.Name -eq 'admin') {
         # 桌面启动器可能尚未继承新设的用户变量；仅向业务服务传入模型配置，不打印密钥。
         foreach ($key in @('DEEPSEEK_API_KEY','DEEPSEEK_BASE_URL','HY4_API_KEY','HY4_BASE_URL','HY4_MODEL','AI_MODEL_PROVIDER','AI_MODEL_TIMEOUT_SECONDS','AI_IMPORT_MAX_ROWS','AI_MAX_CONCURRENT_REQUESTS','AI_IMPORT_TASK_CONCURRENCY','QUOTATION_JAVA_MAX_HEAP')) {

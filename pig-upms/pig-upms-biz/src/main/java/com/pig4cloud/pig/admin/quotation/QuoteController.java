@@ -218,7 +218,7 @@ public class QuoteController {
 		if (action.equals("pause")) return R.ok(aiJobs.pause(owner, jobId));
 		if (action.equals("cancel")) return R.ok(aiJobs.cancel(owner, jobId));
 		if (!action.equals("legacy")) throw new RuleException("未知的整理操作");
-		List<Map<String, Object>> rows = aiImporter.normalize(files);
+		List<Map<String, Object>> rows = aiImporter.normalizeLegacy(files);
 		return R.ok(service.createAiDraft(owner, rows, AiQuoteImportService.sourceSnapshots(files)));
 	}
 
@@ -264,13 +264,14 @@ public class QuoteController {
 			.body((byte[]) source.get("content"));
 	}
 
-	/**
-	 * 按归档选项读取报价摘要，普通报价员仅能看到自己的记录。
-	 */
+	/** 兼容旧列表调用；超过 100 条时要求改用分页接口，避免静默截断。 */
 	@GetMapping("/quotes")
 	@HasPermission("quote_view")
 	public R<?> list(@RequestParam(defaultValue = "false") boolean archived) {
-		return R.ok(service.listQuotes(actor(), archived));
+		var page = service.listQuotePage(actor(), archived, 1, 100, "");
+		if (((Number) page.get("total")).longValue() > 100)
+			throw new ResponseStatusException(HttpStatus.CONFLICT, "报价超过 100 条，请使用 /quotation/quotes/page 分页查询");
+		return R.ok(page.get("records"));
 	}
 
 	/** 分页读取报价摘要；客户/项目搜索与账号可见范围由服务端统一处理。 */

@@ -75,5 +75,6 @@ aitest
 
 # deployment secrets
 /deploy/test/.env
+/deploy/tencent-a/.env
 /.env
 /pig_mysql_data/

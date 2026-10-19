@@ -35,18 +35,26 @@ PIG 提供了完整的部署与开发文档：[wiki.pig4cloud.com](https://wiki.
 
 ### 微服务模式
 
-在项目根目录执行完整编译，再构建并启动本地服务栈：
+在项目根目录执行完整编译。根目录 Compose 使用预构建镜像；先按 `docker-compose.yml` 文件头说明构建并导入各镜像，再启动服务栈：
+
+复制 `.env.example` 为 Git 忽略的 `.env`，填写数据库密码及需要的 AI 配置。Nacos 的身份与签名参数使用 `pig-register/src/main/resources/application.properties` 中恢复的原固定值，不再读取 `NACOS_AUTH_*` 环境变量，也不依赖 `work/local/nacos-auth.json`。原固定值仅用于开发、测试；正式生产应使用独立密钥，不得提交真实环境凭据。
 
 ```bash
 mvn clean install -T 4 -Pcloud
-docker compose build && docker compose up
+docker compose up
 ```
+
+全新 MySQL 数据目录首次启动时，`pig-mysql` 镜像会初始化 `pig`、`pig_config`、`QuotationSystem` 三个库，并从 `db/quotation.sql` 的菜单段给 `pig` 的管理员角色授予报价菜单。修改 `db/Dockerfile` 后需重新构建并导入 `pig-mysql` 镜像；已有 `pig_mysql_data` 不会再次执行镜像初始化脚本，升级时应单独执行对应 SQL。部署前可运行静态检查：`powershell -NoProfile -File scripts/tests/Quotation-Init.Static.Tests.ps1`。
+
+监控服务默认不启动，根目录网关配置及新装 Nacos 种子均不提供 `/monitor/**` 转发。需要本机诊断时，先为 Nacos 中的 `pig-monitor-dev.yml` 设置独立账号与口令，再显式运行 `docker compose --profile monitor up -d pig-monitor`，仅通过宿主机 `127.0.0.1:5001` 访问。已有 `pig_config` 数据卷不会重新应用种子，升级时还需核对并删除旧的网关监控路由；仅关闭直连端口不足以阻止网关转发。可运行 `powershell -NoProfile -File scripts/tests/Monitor-Exposure.Static.Tests.ps1` 检查仓库模板。
 
 服务启动后，默认通过网关端口 `9999` 访问后端接口，Nacos 控制台端口为 `8848`。
 
 ### 单体模式
 
 单体模式通过 `boot` profile 启用 `pig-boot` 模块：
+
+启动前将 `.env.example` 复制为 `.env` 并填写 `MYSQL_ROOT_PASSWORD`。示例文件故意留空，根目录及单体 Compose 都会在未填写时拒绝启动；单体 Compose 会把同一值注入 MySQL 和应用数据源。已有数据库部署应沿用当前密码，不要在普通发版中重置。
 
 ```bash
 mvn clean install -T 4 -Pboot

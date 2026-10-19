@@ -124,6 +124,7 @@ public class QuoteService {
 			if (rows.get(i).containsKey("_product_rule_resource"))
 				resultRows.get(i).put("product_rule", rows.get(i).get("_product_rule_resource"));
 		result.put("product_rule_bindings", productRuleBindings(rows));
+		result.put("installation_rule_bindings", InstallationProductRules.bindings(body, resources));
 		result.put("product_rule_catalog_ids", QuoteListSummary.activeRuleIds(resources));
 		var accessoryIssues = AccessoryImportReview.issues(map(body.get("duct_options")));
 		if (!accessoryIssues.isEmpty()) {
@@ -201,6 +202,8 @@ public class QuoteService {
 			List<Map<String, Object>> resources) {
 		if (result.isEmpty())
 			return false;
+		if (map(result.get("manual_review_import")).isEmpty() && !repo.json(result.getOrDefault("installation_rule_bindings", List.of()))
+				.equals(repo.json(InstallationProductRules.bindings(body, resources)))) return true;
 		var rulePreparation = ProductRuleCatalog.preparation(resources, LocalDate.now());
 		var rows = list(body.get("rows")).stream()
 			.map(rulePreparation::prepare)
@@ -989,14 +992,14 @@ public class QuoteService {
 	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> applyAiInputImport(Actor actor, String id, String importId, Map<String, Object> data) {
+		var imported = repo.find("quote_import", importId, true);
+		if (imported == null || !actor.manager() && Long.parseLong(str(imported.get("owner_id"))) != actor.id())
+			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "回导清单不存在或无权访问");
 		var quote = quote(id, actor, true, true);
 		revision(quote, data);
 		var old = map(quote.get("body"));
 		if (blank(old.get("ai_review_status"))) throw new RuleException("只有AI生成的草稿可以导回已校验清单");
 		if (!yes(data.get("review_confirmed"))) throw new RuleException("请先查看修改差异，再确认导回清单");
-		var imported = repo.find("quote_import", importId, false);
-		if (imported == null || !actor.manager() && Long.parseLong(str(imported.get("owner_id"))) != actor.id())
-			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "回导清单不存在或无权访问");
 		var parsed = map(imported.get("parsed"));
 		if (!s(parsed, "type").equals("ai_input_review_v1") || !s(parsed, "quote_id").equals(id))
 			throw new RuleException("回导清单不属于当前AI草稿");
@@ -1118,7 +1121,7 @@ public class QuoteService {
 			body.put("equipment_options", equipmentDefaults());
 		applyFreight(body, data.getOrDefault("include_freight", false));
 		if (!blank(data.get("import_id"))) {
-			Map<String, Object> imported = repo.find("quote_import", s(data, "import_id"), false);
+			Map<String, Object> imported = repo.find("quote_import", s(data, "import_id"), true);
 			if (imported == null || Long.parseLong(str(imported.get("owner_id"))) != actor.id())
 				throw new ResponseStatusException(HttpStatus.NOT_FOUND, "导入文件不存在或无权访问");
 			List<Map<String, Object>> sheets = list(map(imported.get("parsed")).get("sheets"));
@@ -1207,16 +1210,34 @@ public class QuoteService {
 		List<Map<String, Object>> result = new ArrayList<>();
 		var resources = repo.catalogs();
 		var activeRuleIds = QuoteListSummary.activeRuleIds(resources);
-		for (Map<String, Object> value : values) {
-			Map<String, Object> q = repo.decode(value), body = map(q.remove("body")), calculation = map(q.remove("result"));
+		var summaries = values.stream().map(repo::decode).toList();
+		var changedRuleIds = summaries.stream().filter(q -> s(q, "state").equals("draft"))
+			.filter(q -> QuoteListSummary.rulesChanged(map(q.get("result")), activeRuleIds))
+			.filter(q -> !(map(q.get("result")).get("product_rule_catalog_ids") instanceof List<?> ids
+					&& ids.contains("legacy-unverified")))
+			.map(q -> s(q, "id")).toList();
+		Map<String, Boolean> actualRuleChanges = new HashMap<>();
+		// 规则目录变化时才批量读取当前页的正文，按详情页相同的绑定规则排除无关发布造成的误报。
+		for (int offset = 0; offset < changedRuleIds.size(); offset += 100) {
+			var ids = changedRuleIds.subList(offset, Math.min(offset + 100, changedRuleIds.size()));
+			String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+			for (var value : repo.query("SELECT id,body,result FROM quote_order WHERE id IN (" + placeholders + ")", ids.toArray())) {
+				var full = repo.decode(value);
+				actualRuleChanges.put(s(full, "id"), productRulesChanged(map(full.get("body")), map(full.get("result")), resources));
+			}
+		}
+		for (Map<String, Object> q : summaries) {
+			Map<String, Object> body = map(q.remove("body")), calculation = map(q.remove("result"));
 			// pig会将Long序列化为字符串，这里把导出次数转成整数，确保页面的0值和计数判断正确。
 			q.put("export_count", n(q.get("export_count")).intValueExact());
 			q.putAll(obj("customer", body.get("customer"), "project", body.get("project"), "quote_date",
 					body.get("quote_date"), "row_count", n(body.get("row_count")).intValueExact()));
 			q.put("pricing_mode", body.get("pricing_mode"));
 			q.put("recognition_mode", body.get("recognition_mode"));
+			boolean rulesChanged = QuoteListSummary.rulesChanged(calculation, activeRuleIds);
+			if (rulesChanged && actualRuleChanges.containsKey(s(q, "id"))) rulesChanged = actualRuleChanges.get(s(q, "id"));
 			boolean stale = s(q, "state").equals("draft") && (stale(body, calculation)
-					|| freightIncluded(body) == null || QuoteListSummary.rulesChanged(calculation, activeRuleIds) || catalogsChanged(calculation, resources));
+					|| freightIncluded(body) == null || rulesChanged || catalogsChanged(calculation, resources));
 			q.putAll(obj("result_stale", stale, "total", stale ? null : calculation.get("total"), "pending_count",
 					stale ? null : calculation.get("pending_count")));
 			result.add(q);
@@ -1230,8 +1251,11 @@ public class QuoteService {
 	public Map<String, Object> detail(Actor actor, String id) {
 		Map<String, Object> q = quote(id, actor, false, false), calculation = map(q.get("result"));
 		var body = map(q.get("body"));
-		boolean stale = s(q, "state").equals("draft") && (stale(body, calculation) || freightUnconfirmed(q)
-				|| productRulesChanged(body, calculation, repo.catalogs()) || catalogsChanged(calculation, repo.catalogs()));
+		boolean stale = s(q, "state").equals("draft") && (stale(body, calculation) || freightUnconfirmed(q));
+		if (s(q, "state").equals("draft") && !stale) {
+			var resources = repo.catalogs();
+			stale = productRulesChanged(body, calculation, resources) || catalogsChanged(calculation, resources);
+		}
 		prepareBodyForDisplay(body);
 		q.put("result_stale", stale);
 		if (stale && s(q, "state").equals("draft"))
@@ -1277,7 +1301,11 @@ public class QuoteService {
 		for (int i = 0; i < rows.size(); i++) if (selected.contains(s(rows.get(i), "row_id"))) {
 			if (i >= calculated.size() || !yes(FailedQuoteAssist.inspect(rows.get(i), calculated.get(i)).get("eligible")))
 				throw new RuleException("所选项目已完成、已人工确认，或需要补参数/价格，不能使用AI重新识别");
-			targets.add(rows.get(i));
+			var target = new LinkedHashMap<>(rows.get(i));
+			var detail = map(calculated.get(i).get("detail"));
+			if (yes(map(map(detail.get("product_rule")).get("body")).get("automatic_composition")))
+				target.put("_composition_result", calculated.get(i));
+			targets.add(target);
 		}
 		if (targets.size() != selected.size()) throw new RuleException("所选项目不存在，请刷新报价");
 		return targets;
@@ -1310,8 +1338,14 @@ public class QuoteService {
 			var suggestion = suggestions.stream().filter(v -> s(v, "row_id").equals(rowId)).findFirst().orElseGet(() ->
 					FailedQuoteAssist.suggestion(target, obj(), yes(data.get("include_features"))));
 			entries.removeIf(entry -> s(entry, "row_id").equals(rowId));
-			entries.add(obj("row_id", rowId, "position", index + 1, "source_file", blank(target.get("source_file")) ? map(target.get("original")).get("source_file") : target.get("source_file"),
-					"source_sheet", target.get("source_sheet"), "source_row", target.get("source_row"),
+			var original = map(target.get("original"));
+			Object sourceFile = blank(original.get("source_file")) ? target.get("source_file") : original.get("source_file");
+			Object sourceSheet = original.containsKey("source_sheet") ? original.get("source_sheet") : target.get("source_sheet");
+			Object sourceRow = !blank(original.get("source_row")) ? original.get("source_row")
+					: str(sourceFile).matches("(?i).*\\.xlsx?") ? target.get("source_row") : null;
+			Object sourceLocator = blank(original.get("source_locator")) ? target.get("source_locator") : original.get("source_locator");
+			entries.add(obj("row_id", rowId, "position", index + 1, "source_file", sourceFile,
+					"source_sheet", sourceSheet, "source_row", sourceRow, "source_locator", sourceLocator,
 					"before", FailedQuoteAssist.snapshot(target), "initial_reason", results.get(index).get("reason"),
 					"suggestion", suggestion, "status", !error.isBlank() ? "request_failed" : yes(suggestion.get("verified")) ? "suggested" : "no_suggestion",
 					"error", error));
@@ -1713,6 +1747,7 @@ public class QuoteService {
 		}
 		if (!yes(parsed.get("input_recalculated")) && list(parsed.get("scope_restorations")).isEmpty())
 			resolveReviewEquipmentFreight(map(q.get("body")), result, parsed, repo.catalogs());
+		parsed.put("installation_rule_candidates", InstallationRuleLearning.candidates(map(q.get("body")), result, parsed, repo.catalogs()));
 		String importId = uuid();
 		parsed.putAll(obj("filename", clean, "base_revision", expectedRevision));
 		repo.update(
@@ -1734,7 +1769,8 @@ public class QuoteService {
 				"equipment_freight_included", parsed.get("equipment_freight_included"),
 				"installation_total", parsed.get("installation_total"),
 				"before_payment_total", parsed.get("before_payment_total"), "column_count", parsed.get("column_count"),
-				"review_rows", reviewRows, "scope_restorations", list(parsed.get("scope_restorations")));
+				"review_rows", reviewRows, "scope_restorations", list(parsed.get("scope_restorations")),
+				"installation_rule_candidates", parsed.get("installation_rule_candidates"), "can_publish_installation_rules", actor.manager());
 	}
 
 	private static String quotationScope(Map<String, Object> row) {
@@ -2047,11 +2083,11 @@ public class QuoteService {
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> applyReviewImport(Actor actor, String id, String importId,
 			Map<String, Object> data) {
-		Map<String, Object> q = quote(id, actor, true, true);
-		revision(q, data);
 		Map<String, Object> imported = repo.find("quote_import", importId, true);
 		if (imported == null || Long.parseLong(str(imported.get("owner_id"))) != actor.id())
 			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "校对版导入记录不存在或无权访问");
+		Map<String, Object> q = quote(id, actor, true, true);
+		revision(q, data);
 		Map<String, Object> parsed = map(imported.get("parsed"));
 		if (!s(parsed, "type").equals("review_import_v1") || !s(parsed, "quote_id").equals(id))
 			throw new RuleException("校对版导入记录与当前报价不匹配");
@@ -2062,9 +2098,11 @@ public class QuoteService {
 		if (n(parsed.get("change_count")).signum() == 0)
 			throw new RuleException("校对版没有检测到任何人工修改");
 		Map<String, Object> body = map(q.get("body")), result = map(q.get("result"));
+		var installationLearningQuote = list(data.get("installation_rules")).isEmpty() ? q : repo.object(repo.json(q));
 		if (result.isEmpty())
 			throw new RuleException("当前报价尚未试算，不能应用校对结果");
 		if (yes(parsed.get("input_recalculated"))) {
+			if (!list(data.get("installation_rules")).isEmpty()) throw new RuleException("本次先回导参数，重新导出价格校对版后再采集安装规则");
 			var inputBody = excelParameterBody(body, parsed);
 			if (!blank(inputBody.get("ai_review_status"))) inputBody.put("ai_review_status", "approved");
 			var inputResult = compute(inputBody, repo.catalogs(), map(settings(actor).get("policy")));
@@ -2221,11 +2259,82 @@ public class QuoteService {
 		// 人工核实价格不再依赖被替代的材料目录；其余自动行仍保留原目录绑定，不能借回导确认旧价。
 		var remainingKinds = catalogBindings(body, result, repo.catalogs()).stream().map(binding -> s(binding, "kind")).toList();
 		result.put("catalog_bindings", list(result.get("catalog_bindings")).stream().filter(binding -> remainingKinds.contains(s(binding, "kind"))).toList());
+		var installationDrafts = captureInstallationRules(actor, installationLearningQuote, imported, parsed, data);
+		if (!installationDrafts.isEmpty()) {
+			review.put("installation_rules", installationDrafts);
+			result.put("product_rule_catalog_ids", QuoteListSummary.activeRuleIds(repo.catalogs()));
+		}
 		repo.updateOrder(id, obj("body", body, "result", result), true, true);
 		repo.audit(actor, "apply_review_import", id,
 				obj("import_id", importId, "change_count", parsed.get("change_count"), "pending_count", pending, "subtotal",
 						parsed.get("subtotal"), "restored_scope_row_ids", new ArrayList<>(restoredScope)));
-		return obj("result", result, "revision", n(q.get("revision")).intValue() + 1);
+		return obj("result", result, "revision", n(q.get("revision")).intValue() + 1, "installation_rules", installationDrafts);
+	}
+
+	/** 仅根据服务器保存的回导差异生成安装草稿；客户端不能提交名称、地区、条件或材料算法。 */
+	private List<Map<String, Object>> captureInstallationRules(Actor actor, Map<String, Object> quote,
+			Map<String, Object> imported, Map<String, Object> parsed, Map<String, Object> data) {
+		var selections = list(data.get("installation_rules"));
+		if (selections.isEmpty()) return List.of();
+		if (selections.size() > 1000) throw new RuleException("一次最多提交1000项安装规则");
+		boolean publish = yes(data.get("publish_installation_rules"));
+		if (publish) leader(actor);
+		repo.catalogLock();
+		var resources = repo.catalogs();
+		var candidates = list(parsed.get("installation_rule_candidates"));
+		var current = InstallationRuleLearning.candidates(map(quote.get("body")), map(quote.get("result")), parsed, resources);
+		Set<String> ids = new HashSet<>();
+		Map<String, Map<String, Object>> groups = new LinkedHashMap<>();
+		List<Map<String, Object>> saved = new ArrayList<>();
+		for (var selection : selections) {
+			String rowId = s(selection, "candidate_id");
+			if (!ids.add(rowId)) throw new RuleException("同一产品安装规则不能重复提交");
+			var candidate = candidates.stream().filter(c -> s(c, "candidate_id").equals(rowId)).findFirst()
+					.orElseThrow(() -> new RuleException("所选安装价格不属于本次回导，请重新核对"));
+			var fresh = current.stream().filter(c -> s(c, "candidate_id").equals(rowId)).findFirst()
+					.orElseThrow(() -> new RuleException("安装规则或适用条件已变化，请重新预览校对版"));
+			if (!repo.json(candidate).equals(repo.json(fresh))) conflict("安装规则在预览后已变化，请重新上传校对版");
+			var definition = InstallationRuleLearning.definition(candidate, selection);
+			var scope = new LinkedHashMap<>(definition); scope.remove("installation");
+			String key = repo.json(scope);
+			if (groups.containsKey(key)) {
+				if (!repo.json(groups.get(key).get("installation")).equals(repo.json(definition.get("installation"))))
+					throw new RuleException("相同产品和适用条件填写了不同安装单价，请保留一份核实后的规则");
+				continue;
+			}
+			groups.put(key, definition);
+			var target = map(candidate.get("target"));
+			String family = s(target, "family");
+			var pending = resources.stream().filter(r -> s(r, "kind").equals("product_rule") && s(r, "status").equals("draft"))
+				.filter(r -> family.isBlank() ? ProductRuleCatalog.conflicts(definition, map(r.get("body"))) : s(r, "family").equals(family)).toList();
+			String id;
+			if (!pending.isEmpty()) {
+				if (!actor.manager() && Long.parseLong(str(pending.get(0).get("created_by"))) != actor.id())
+					conflict("该产品已有待负责人处理的安装草稿，请先核对；也可以取消采集，仅回导本单");
+				var existingDefinition = map(pending.get(0).get("body"));
+				if (pending.size() != 1 || !repo.json(existingDefinition.get("installation")).equals(repo.json(definition.get("installation")))
+						|| !map(existingDefinition.get("conditions")).equals(map(definition.get("conditions")))
+						|| !map(existingDefinition.get("installation_context")).equals(map(definition.get("installation_context")))
+						|| !s(existingDefinition, "unit").equals(s(definition, "unit"))
+						|| !Objects.equals(existingDefinition.get("aliases"), definition.get("aliases")))
+					conflict("该产品已有待发布的安装草稿，请先到产品规则管理核对；也可以取消采集，仅回导本单");
+				id = s(pending.get(0), "id");
+			}
+			else if (family.isBlank()) id = s(insertCatalog(actor, "product_rule", definition), "id");
+			else {
+				checkCatalogDraft(definition);
+				int version = resources.stream().filter(r -> s(r, "family").equals(family)).mapToInt(r -> n(r.get("version")).intValue()).max().orElse(0) + 1;
+				id = uuid();
+				repo.update("INSERT INTO quote_catalog(id,family,kind,version,status,body,revision,created_by,created_at) VALUES(?,?,'product_rule',?,'draft',?,1,?,CURRENT_TIMESTAMP)",
+						id, family, version, repo.json(definition), actor.id());
+			}
+			if (publish) catalogAction(actor, id, "publish", obj("revision", catalog(id).get("revision")));
+			repo.audit(actor, "capture_installation_rule", id, obj("quote_id", quote.get("id"), "import_id", imported.get("id"), "row_id", rowId, "from", target,
+					"input_tax_basis", selection.get("tax_basis"), "input_unit_price", selection.get("unit_price"),
+					"tax_factor", text(InstallationPricingEngine.TAX_FACTOR), "untaxed_unit_price", InstallationRuleLearning.untaxedPrice(selection)));
+			saved.add(obj("id", id, "name", definition.get("name"), "status", publish ? "published" : "draft"));
+		}
+		return saved;
 	}
 
 	/**
@@ -2324,9 +2433,6 @@ public class QuoteService {
 				if (!state.equals("draft") || exported)
 					conflict("只有未导出的草稿可删除；已有导出记录请归档");
 				repo.update("DELETE FROM quote_order WHERE id=?", id);
-				if (!blank(body.get("ai_review_status"))
-						&& repo.scalar("SELECT COUNT(*) FROM quote_order WHERE family=?", Integer.class, q.get("family")) == 0)
-					repo.update("DELETE FROM quote_import WHERE id=?", s(body, "import_id"));
 			}
 			// 归档保存原状态，恢复时回到草稿或定稿，不把历史正式报价变成可编辑数据。
 			case "archive" -> {

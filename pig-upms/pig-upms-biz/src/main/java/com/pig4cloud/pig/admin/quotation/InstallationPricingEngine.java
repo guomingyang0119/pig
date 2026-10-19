@@ -16,7 +16,8 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 public final class InstallationPricingEngine {
 
 	// 安装规则版本用于历史计算追溯，改变结算口径时需重新试算。
-	public static final String VERSION = "installation-v7";
+	public static final String VERSION = "installation-v8";
+	static final BigDecimal TAX_FACTOR = n("1.01");
 
 	// 安装支持的计量单位；只有已确认的少量产品允许等量使用“台/个/套”，其余不能自动换算。
 	private static final Set<String> UNITS = Set.of("㎡", "台", "个", "套");
@@ -529,6 +530,7 @@ public final class InstallationPricingEngine {
 	/** 明确本行项目/价优先；公共安装规则只提供对应，数量、地区及施工参数始终取当前报价。 */
 	static Map<String, Object> ruleLine(Map<String, Object> row, Map<String, Object> manual,
 			Map<String, Object> quote, Map<String, Object> catalog, Map<String, Object> calculated) {
+		if (!blank(row.get("_installation_rule_issue"))) return obj("name", row.get("name"), "status", "pending", "amount", null, "reason", row.get("_installation_rule_issue"));
 		var profile = ProductRuleInstallation.profile(row);
 		if (profile.isEmpty() || ProductRuleInstallation.primaryOverride(manual) || yes(row.get("excluded")))
 			return line(row, manual, quote, catalog, calculated);
@@ -561,7 +563,7 @@ public final class InstallationPricingEngine {
 			children.add(child);
 		}
 		if (!split && children.size() == 1) return children.get(0);
-		BigDecimal taxFactor = taxIncluded(quote) ? n("1.01") : ONE;
+		BigDecimal taxFactor = taxIncluded(quote) ? TAX_FACTOR : ONE;
 		var priced = children.stream().filter(child -> s(child, "status").equals("priced")).toList();
 		for (var child : priced) priceLine(child, taxFactor);
 		boolean ready = !children.isEmpty() && priced.size() == children.size();
@@ -636,8 +638,10 @@ public final class InstallationPricingEngine {
 		List<String> issues = new ArrayList<>();
 		var rows = list(quote.get("rows"));
 		for (int i = 0; i < rows.size(); i++) {
-			var line = ruleLine(rows.get(i), map(rows.get(i).get("installation")), quote, catalog,
+			var prepared = InstallationProductRules.prepare(rows.get(i), quote, resources, day);
+			var line = ruleLine(prepared, map(rows.get(i).get("installation")), quote, catalog,
 					i < calculatedRows.size() ? calculatedRows.get(i) : obj());
+			if (prepared.containsKey("_installation_rule_resource")) line.put("installation_rule", prepared.get("_installation_rule_resource"));
 			line.put("row_index", i);
 			lines.add(line);
 		}
@@ -659,7 +663,7 @@ public final class InstallationPricingEngine {
 			issues.add("安装费：没有已确认的安装项目");
 		boolean includesTax = taxIncluded(quote);
 		// 安装指标是未税销售价，含税订单乘 1.01、不含税乘 1，不再除设备毛利率。
-		BigDecimal taxFactor = includesTax ? n("1.01") : ONE;
+		BigDecimal taxFactor = includesTax ? TAX_FACTOR : ONE;
 		BigDecimal labor = sum(priced, "amount"), auxiliaries = priced.stream()
 			.filter(l -> l.get("auxiliary") != null)
 			.map(l -> n(map(l.get("auxiliary")).get("amount")))

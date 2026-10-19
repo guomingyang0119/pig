@@ -44,8 +44,23 @@ CREATE TABLE IF NOT EXISTS quote_import (
   filename varchar(255) NOT NULL,
   parsed longtext NOT NULL,
   created_at datetime NOT NULL,
-  KEY idx_quote_import_owner (owner_id)
+  KEY idx_quote_import_owner (owner_id), KEY idx_quote_import_created (created_at,id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='客户清单解析快照';
+
+-- AI整理v2：原资料保留在quote_import一次，租约/进度与逐批结果分别更新。
+CREATE TABLE IF NOT EXISTS quote_ai_job (
+  id varchar(32) PRIMARY KEY, owner_id bigint NOT NULL, state varchar(16) NOT NULL,
+  meta longtext NOT NULL, created_at datetime NOT NULL, updated_at datetime NOT NULL,
+  KEY idx_quote_ai_job_owner_state (owner_id,state,created_at,id),
+  CONSTRAINT fk_quote_ai_job_import FOREIGN KEY (id) REFERENCES quote_import (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI整理轻量进度与租约';
+CREATE TABLE IF NOT EXISTS quote_ai_batch (
+  job_id varchar(32) NOT NULL, batch_index int NOT NULL, label text NOT NULL,
+  start_row int NULL, end_row int NULL, batch_state varchar(16) NOT NULL,
+  batch_error text NULL, output longtext NULL,
+  PRIMARY KEY (job_id,batch_index),
+  CONSTRAINT fk_quote_ai_batch_job FOREIGN KEY (job_id) REFERENCES quote_ai_job (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI整理逐批结果';
 
 -- 保存已经生成的Excel二进制快照，quote_id关联对应报价版本。
 -- kind区分校对版与正式版，模板版本和SHA-256用于追溯；历史下载直接读取content。

@@ -24,6 +24,7 @@ import com.pig4cloud.pig.common.swagger.annotation.EnableOpenApi;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * @author lengleng
@@ -34,6 +35,7 @@ import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 @EnableOpenApi("admin")
 @EnablePigResourceServer
 @EnableDiscoveryClient
+@EnableScheduling
 @SpringBootApplication
 public class PigAdminApplication {
 

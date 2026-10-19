@@ -53,7 +53,7 @@
         <docker.host>http://127.0.0.1:2375</docker.host>
         <docker.namespace>pigcloudx</docker.namespace>
         <docker.username>佩小格科技</docker.username>
-        <docker.password>qq123456</docker.password>
+        <docker.password>${env.DOCKER_REGISTRY_PASSWORD}</docker.password>
         <docker.plugin.version>0.33.0</docker.plugin.version>
         <!--  默认忽略docker构建 -->
         <docker.skip>false</docker.skip>

@@ -2,6 +2,8 @@
 # 1. 在开发机运行各服务目录中的 buid.bat，生成 amd64 镜像 tar 包。
 # 2. 将 tar 包、docker-compose.yml 和 .env 上传到服务器后执行：docker load -i <镜像.tar>
 # 3. 执行：docker compose up -d
+# 此文件是单机整套部署；当前腾讯云 A/B 使用 deploy/ 下的独立配置。
+# 报价库初始化仅在全新 pig_mysql_data 目录首次启动时执行，已有数据库应走迁移脚本。
 name: pig
 
 services:
@@ -57,9 +59,9 @@ services:
       DB_USER: root
       DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
     ports:
-      - "8848:8848"
-      - "9848:9848"
-      - "18080:18080"
+      - "127.0.0.1:8848:8848"
+      - "127.0.0.1:9848:9848"
+      - "127.0.0.1:18080:18080"
     depends_on:
       pig-mysql:
         condition: service_healthy
@@ -116,6 +118,9 @@ services:
       MYSQL_DB: pig
       MYSQL_USER: root
       MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
+      QUOTATION_DB_URL: jdbc:mysql://pig-mysql:3306/QuotationSystem?characterEncoding=utf8&useUnicode=true&useSSL=false&serverTimezone=GMT%2B8&allowPublicKeyRetrieval=true
+      QUOTATION_DB_USERNAME: root
+      QUOTATION_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required in .env}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       HY4_API_KEY: ${HY4_API_KEY:-}
@@ -140,12 +145,13 @@ services:
     platform: linux/amd64
     container_name: pig-monitor
     restart: unless-stopped
+    profiles: [monitor]
     environment:
       TZ: Asia/Shanghai
       NACOS_HOST: pig-register
       NACOS_PORT: 8848
     ports:
-      - "5001:5001"
+      - "127.0.0.1:5001:5001"
     depends_on:
       pig-register:
         condition: service_started

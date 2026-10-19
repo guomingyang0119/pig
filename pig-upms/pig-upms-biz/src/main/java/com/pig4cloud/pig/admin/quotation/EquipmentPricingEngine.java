@@ -17,7 +17,7 @@ import com.pig4cloud.pig.admin.quotation.EquipmentFanSelector.Cost;
 public final class EquipmentPricingEngine {
 
 	// 纯设备及混合报价分别记录引擎版本，供正式导出检查试算是否仍适用。
-	public static final String VERSION = "equipment-v31", MIXED_VERSION = "mixed-v31";
+	public static final String VERSION = "equipment-v38", MIXED_VERSION = "mixed-v38";
 
 	// 内置设备计算类型；组合和全新公式产品另通过产品规则进入 custom 成本分支。
 	public static final Set<String> KINDS = ProductDefinitions.equipmentKinds();
@@ -244,6 +244,11 @@ public final class EquipmentPricingEngine {
 		return (description.find() ? main.substring(0, description.start()) : main).trim();
 	}
 
+	/** 普通排烟阀沿用远控防火阀成本，常开/常闭只表示启闭状态。 */
+	static boolean smokeValveUsesRemoteFire(Map<String, Object> row) {
+		return classifySource(row).equals("fire") && mainProductText(s(row, "name")).contains("排烟阀");
+	}
+
 	/**
 	 * 从名称、规格和备注中提取尺寸、型号、风量、风压、功率等参数。已有属性优先，复合尺寸则按明确表达式拆分阀体与面板段。
 	 */
@@ -270,6 +275,15 @@ public final class EquipmentPricingEngine {
 	}
 
 	private static Map<String, Object> parseAttributes(Map<String, Object> row, String kind, boolean valveAlias) {
+		return parseAttributes(row, kind, valveAlias, true);
+	}
+
+	/** 原列证据核验保留客户的两边顺序；计价入口始终另行归一，避免把换序误判为列冲突。 */
+	static Map<String, Object> parseSourceAttributes(Map<String, Object> row) {
+		return parseAttributes(row, classify(row), false, false);
+	}
+
+	private static Map<String, Object> parseAttributes(Map<String, Object> row, String kind, boolean valveAlias, boolean normalizeDimensions) {
 		Map<String, Object> a = obj();
 		map(row.get("attributes")).forEach((k, v) -> {
 			if (v != null && !"".equals(v))
@@ -290,7 +304,11 @@ public final class EquipmentPricingEngine {
 		dimensionsText = AiInputReview.unusableGeometry(dimensionsText) ? "" : AiInputReview.normalizeDimensionUnits(dimensionsText);
 		Matcher panel = match(DECIMAL + "\\s*[×xX*＊]\\s*[（(]\\s*" + DECIMAL + "\\s*[+＋]\\s*" + DECIMAL + "\\s*[）)]", dimensionsText);
 		if (panel.find()) {
-			if (Set.of("multi_leaf", "plate_smoke").contains(kind))
+			if (PressureSupplyOutlet.applies(row)) {
+				a.putIfAbsent("width", panel.group(1));
+				a.putIfAbsent("height", text(add(n(panel.group(2)), n(panel.group(3)))));
+			}
+			else if (Set.of("multi_leaf", "plate_smoke").contains(kind))
 				a.putAll(obj("width", panel.group(1), "height", panel.group(2), "body_width", panel.group(1),
 						"body_height", panel.group(2), "panel_height", panel.group(3), "dimension_expression", panel.group(),
 						"overall_height", text(add(n(panel.group(2)), n(panel.group(3))))));
@@ -342,6 +360,9 @@ public final class EquipmentPricingEngine {
 				a.putIfAbsent(rule[1], rule[2]);
 		boolean controlledValve = Set.of("fire", "electric_fire", "plate_smoke").contains(kind)
 				|| PressureSupplyOutlet.applies(row) || FireOutletRule.applies(row);
+		// 名称已明确排烟阀时统一采用远控；旧识别留下的近控属性不能漏算远控机构费用。
+		if (kind.equals("fire") && smokeValveUsesRemoteFire(row))
+			a.putAll(obj("control", "remote", "remote", true));
 		if (controlledValve) {
 			String control = valveControl(a.get("control"));
 			if (control.isEmpty()) {
@@ -427,6 +448,7 @@ public final class EquipmentPricingEngine {
 				&& Set.of("钢制", "钢质").contains(s(a, "material"))) a.put("material", "galvanized");
 		PressureSupplyOutlet.normalize(row, a);
 		AiInputReview.clearedFields(a).forEach(a::remove);
+		if (normalizeDimensions) EquipmentDimensions.normalize(a);
 		return a;
 	}
 
@@ -445,7 +467,10 @@ public final class EquipmentPricingEngine {
 
 	/** 按阀体尺寸、叶片数量、材料、机构、拼接和面板等组成项计算阀门基础成本。 */
 	public static Cost valveCost(String originalKind, Map<String, Object> a, Map<String, Object> catalog) {
-		// 阀门宽高和板厚用 mm，材料吨价由镀锌基础价或不锈钢板厚价提供。
+		a = new LinkedHashMap<>(a);
+		if (!originalKind.equals("multi_leaf")) a.remove("_pressure_supply");
+		EquipmentDimensions.normalize(a);
+		// 尺寸和板厚用 mm；普通阀 width/height 为长/宽，正压为宽/整体高。
 		Map<String, Object> rates = map(catalog.get("rates"));
 		// 余压阀按对应尺寸防火阀成本计算，并在明细中保留代价依据。
 		boolean proxy = originalKind.equals("pressure_relief");
@@ -457,9 +482,13 @@ public final class EquipmentPricingEngine {
 			throw new RuleException(label + "成本规则缺少叶片板厚、机构费或基础人工费，请补齐成本资料");
 		boolean roundValve = s(a, "shape").equals("round");
 		boolean diameterDimensions = roundValve && !blank(a.get("diameter"));
-		BigDecimal w = diameterDimensions ? required(a, "diameter", "圆阀直径（mm）") : required(a, "width", "宽度（mm）");
-		BigDecimal h = diameterDimensions ? w : required(a, "height", "高度（mm）");
 		boolean pressureSupply = kind.equals("multi_leaf") && yes(a.get("_pressure_supply"));
+		if (pressureSupply) {
+			String issue = PressureSupplyOutlet.inputIssue(obj("name", "正压送风口"), a);
+			if (!issue.isBlank()) throw new RuleException(issue);
+		}
+		BigDecimal w = diameterDimensions ? required(a, "diameter", "圆阀直径（mm）") : required(a, "width", pressureSupply ? "宽度（mm）" : "长边（mm）");
+		BigDecimal h = diameterDimensions ? w : required(a, "height", pressureSupply ? "整体高度（mm）" : "短边（mm）");
 		boolean fireValve = !proxy && Set.of("fire", "electric_fire").contains(kind);
 		boolean plateSmoke = kind.equals("plate_smoke");
 		BigDecimal longSide = w.max(h), shortSide = w.min(h);
@@ -468,11 +497,12 @@ public final class EquipmentPricingEngine {
 				: plateSmoke ? false : fireValve ? longSide.compareTo(rate(rates, "split_width")) > 0
 						|| shortSide.compareTo(rate(rates, "split_height")) > 0
 				: w.compareTo(rate(rates, "split_width")) > 0 || h.compareTo(rate(rates, "split_height")) > 0;
-		// 基础1个，长边每2000与短边每1000增加的机构相加；正压短边界限仍读取其专用指标。
+		// 防火阀控制份数与机构拼接次数一致；正压保留专用分段界限，板式沿用原机构计数。
 		BigDecimal mechanismCount = pressureSupply ? add(longSide.divide(n(2000), 0, RoundingMode.CEILING),
 				shortSide.divide(positive(pressureSupplyRate(rates, "pressure_supply_mechanism_width", "1000"),
 						"正压机构宽度"), 0, RoundingMode.CEILING)).subtract(ONE)
-				: fireValve || plateSmoke ? add(longSide.divide(n(2000), 0, RoundingMode.CEILING),
+				: fireValve ? add(ONE, spliceCount(longSide, rate(rates, "splice_width")), spliceCount(shortSide, rate(rates, "splice_height")))
+				: plateSmoke ? add(longSide.divide(n(2000), 0, RoundingMode.CEILING),
 						shortSide.divide(n(1000), 0, RoundingMode.CEILING)).subtract(ONE) : ONE;
 		BigDecimal groups = n(split ? 2 : 1), blades = mul(ceil(div(kind.equals("multi_leaf") ? w : h, 200)), groups);
 		BigDecimal ft = positive(a.getOrDefault("thickness", "1.2"), "阀体板厚");
@@ -522,7 +552,7 @@ public final class EquipmentPricingEngine {
 		}
 		if (kind.equals("multi_leaf") && split)
 			parts.put("shaft", mul(parts.get("shaft"), n(2)));
-		// 三类产品以普通机构单价为基础；远控每机构加40，全自动仅防火阀每机构加150。
+		// 防火及正压基础机构只计一次，控制附加按分段份数计；板式与其他阀保留原规则。
 		BigDecimal mechanism = pressureSupply ? pressureSupplyRate(rates, "pressure_supply_mechanism", "20") : n(cfg.get("mechanism"));
 		String control = blank(a.get("control")) ? enabled(a.get("remote")) ? "remote" : "near" : valveControl(a.get("control"));
 		if (!Set.of("near", "remote", "auto").contains(control))
@@ -533,15 +563,17 @@ public final class EquipmentPricingEngine {
 		if (!blank(a.get("mechanism_cost")))
 			mechanism = n(a.get("mechanism_cost"));
 		BigDecimal mechanismBase = mechanism, remoteExtra = ZERO, autoExtra = ZERO;
-		mechanism = mul(mechanismBase, mechanismCount);
+		boolean singleBase = fireValve || pressureSupply;
+		BigDecimal baseCount = singleBase ? ONE : mechanismCount;
+		mechanism = mul(mechanismBase, baseCount);
 		boolean perMechanism = fireValve || plateSmoke || pressureSupply;
 		if (fireValve && control.equals("auto")) {
 			autoExtra = mechanismRate(rates, "fire_auto_extra", "150");
-			mechanism = mul(add(mechanismBase, autoExtra), mechanismCount);
+			mechanism = add(mechanism, mul(autoExtra, mechanismCount));
 		}
 		else if (perMechanism && control.equals("remote")) {
 			remoteExtra = mechanismRate(rates, "valve_remote_extra", "40");
-			mechanism = mul(add(mechanismBase, remoteExtra), mechanismCount);
+			mechanism = add(mechanism, mul(remoteExtra, mechanismCount));
 		}
 		else if (!perMechanism && (enabled(a.get("remote")) || control.equals("remote"))) {
 			remoteExtra = rate(rates, "remote_extra");
@@ -551,11 +583,11 @@ public final class EquipmentPricingEngine {
 		// 两个方向分别按分段数减1计拼接，再乘对应产品的每次成本；不再采用历史人工拼接费。
 		BigDecimal splice = ZERO, widthSplices = ZERO, heightSplices = ZERO, spliceRate = ZERO;
 		BigDecimal spliceWidth = null, spliceHeight = null;
-		if (Set.of("fire", "electric_fire", "electric_control", "manual").contains(kind)) {
-			spliceWidth = rate(rates, "splice_width");
-			spliceHeight = rate(rates, "splice_height");
-			widthSplices = spliceCount(w, spliceWidth);
-			heightSplices = spliceCount(h, spliceHeight);
+		if (pressureSupply || Set.of("fire", "electric_fire", "electric_control", "manual").contains(kind)) {
+			spliceWidth = pressureSupply ? n(2000) : rate(rates, "splice_width");
+			spliceHeight = pressureSupply ? pressureSupplyRate(rates, "pressure_supply_mechanism_width", "1000") : rate(rates, "splice_height");
+			widthSplices = spliceCount(pressureSupply ? longSide : w, spliceWidth);
+			heightSplices = spliceCount(pressureSupply ? shortSide : h, spliceHeight);
 			spliceRate = rate(rates, kind.equals("manual") ? "manual_splice" : "fire_splice");
 			splice = mul(add(widthSplices, heightSplices), spliceRate);
 		}
@@ -589,17 +621,20 @@ public final class EquipmentPricingEngine {
 			componentFormulas.put("shaft", "(" + s(expressions, "shaft") + ") × 2");
 		if (pressureSupply) componentFormulas.put("link", pressureLink);
 		if (roundValve) componentFormulas.put("round_processing", text(ordinaryValveCost) + " × (1.3 - 1)");
-		componentFormulas.put("mechanism", perMechanism
+		componentFormulas.put("mechanism", singleBase
+				? text(mechanismBase) + " + " + text(add(remoteExtra, autoExtra)) + " × " + text(mechanismCount)
+				: perMechanism
 				? "(" + text(mechanismBase) + " + " + text(add(remoteExtra, autoExtra)) + ") × " + text(mechanismCount)
 				: text(mechanismBase) + " + " + text(remoteExtra));
-		componentFormulas.put("splice", spliceWidth == null ? "0" : "(" + text(widthSplices) + "（宽" + text(w)
-				+ "÷" + text(spliceWidth) + "，向上取整后减1） + " + text(heightSplices) + "（高" + text(h)
+		componentFormulas.put("splice", spliceWidth == null ? "0" : "(" + text(widthSplices) + "（长边方向：" + text(pressureSupply ? longSide : w)
+				+ "÷" + text(spliceWidth) + "，向上取整后减1） + " + text(heightSplices) + "（短边方向：" + text(pressureSupply ? shortSide : h)
 				+ "÷" + text(spliceHeight) + "，向上取整后减1）) × " + text(spliceRate));
 		if (parts.containsKey("panel"))
 			componentFormulas.put("panel", "(" + text(w) + " + " + s(rates, "panel_edge") + ") × ("
 					+ text(h) + " + " + s(rates, "panel_edge") + ") × " + text(panelRate) + " ÷ 1000000");
 		return new Cost(parts.values().stream().reduce(ZERO, QuoteData::add), obj("components", components, "split",
 				split, "groups", text(groups), "blades", text(blades), "price_proxy", proxy ? "对应规格防火阀" : null,
+				"dimension_order", pressureSupply ? "width_height" : "length_width",
 				"component_inputs", env, "component_formulas", componentFormulas,
 				"splice_width_count", text(widthSplices), "splice_height_count", text(heightSplices),
 				"splice_width", spliceWidth == null ? null : text(spliceWidth), "splice_height", spliceHeight == null ? null : text(spliceHeight),
@@ -609,6 +644,7 @@ public final class EquipmentPricingEngine {
 				"panel_outer_width", parts.containsKey("panel") ? text(add(w, rate(rates, "panel_edge"))) : null,
 				"panel_outer_height", parts.containsKey("panel") ? text(add(h, rate(rates, "panel_edge"))) : null,
 				"pressure_supply", pressureSupply, "mechanism_count", mechanismCount,
+				"mechanism_base_count", baseCount, "single_base_mechanism", singleBase,
 				"mechanism_base", text(mechanismBase), "remote_extra", text(remoteExtra), "auto_extra", text(autoExtra),
 				"control", control, "long_side", text(longSide), "short_side", text(shortSide), "material_prices",
 				obj("frame_price", text(n(env.get("frame_price"))), "blade_price", text(n(env.get("blade_price")))),
@@ -627,7 +663,9 @@ public final class EquipmentPricingEngine {
 	 */
 	public static Cost areaCost(String kind, Map<String, Object> row, Map<String, Object> a,
 			Map<String, Object> catalog) {
-		BigDecimal w = required(a, "width", "宽度（mm）"), h = required(a, "height", "高度（mm）");
+		a = new LinkedHashMap<>(a);
+		EquipmentDimensions.normalize(a);
+		BigDecimal w = required(a, "width", "长边（mm）"), h = required(a, "height", "短边（mm）");
 		Map<String, Object> rates = map(catalog.get("rates"));
 		String material = s(a, "material");
 		if ((contains(material, "不锈", "stainless") || Set.of("201", "304").contains(material))
@@ -650,7 +688,7 @@ public final class EquipmentPricingEngine {
 			// 宽高增加边距后除以 1000000 换成㎡；实际成本为面积×成本价×倍率与最低成本的较大值。
 			BigDecimal area = div(mul(add(w, edge), add(h, edge)), 1000000);
 			return new Cost(mul(area, n(a.getOrDefault("area_cost", rate)), factor).max(minimum),
-					obj("width", text(w), "height", text(h), "edge", text(edge), "area", text(area),
+					obj("dimension_order", "length_width", "width", text(w), "height", text(h), "edge", text(edge), "area", text(area),
 						"area_rate", text(n(a.getOrDefault("area_cost", rate))), "area_factor", text(factor),
 						"louver_type", type, "pricing_louver_type", pricingType, "minimum_cost", text(minimum),
 						"pricing_louver_basis", basis, "recognition_evidence", recognition.get("recognition_evidence")));
@@ -686,7 +724,7 @@ public final class EquipmentPricingEngine {
 			cost = div(cost, angleDivisor);
 		}
 		return new Cost(cost,
-				obj("width", text(sourceWidth), "height", text(sourceHeight), "length", text(length),
+				obj("dimension_order", "length_width", "width", text(sourceWidth), "height", text(sourceHeight), "length", text(length),
 						"adjusted_width", text(w), "adjusted_height", text(h), "area", text(area),
 						"area_cost_region", !a.containsKey("area_cost") && !layer.equals("double") && catalog.containsKey("acoustic_region_costs") ? s(catalog, "_acoustic_region") : "",
 						"area_rate", text(n(a.getOrDefault("area_cost", rate))), "layer", layer,
@@ -759,6 +797,13 @@ public final class EquipmentPricingEngine {
 				throw new RuleException("请明确设备报价是否含税");
 			if (!bool(options.get("include_freight")))
 				throw new RuleException("请明确设备是否包含运费");
+			if (ProductComposition.automatic(row)) {
+				String requirements = s(row, "name").replaceAll("(?:不含|不包含|未含)(?:安装费|运费)", "");
+				if (has("(?:含|包含)安装费", requirements) && !yes(options.get("include_installation")))
+					throw new RuleException("产品名称要求含安装费，但本单选择不含安装，请核对报价范围后重新试算");
+				if (has("(?:含|包含)运费", requirements) && !yes(options.get("include_freight")))
+					throw new RuleException("产品名称要求含运费，但本单选择不含运费，请核对报价范围后重新试算");
+			}
 			// 风机、阀门、面积类产品和外购设备分别使用各自的成本模型。
 			Cost calculated = null;
 			if (productRuleType.equals("formula"))
@@ -784,6 +829,8 @@ public final class EquipmentPricingEngine {
 			else if (kind.equals("purchased"))
 				calculated = PurchasedEquipment.cost(row, a, catalog);
 			Map<String, Object> detail = calculated == null ? obj() : calculated.detail();
+			if (kind.equals("fire") && smokeValveUsesRemoteFire(row) && s(detail, "control").equals("remote"))
+				detail.put("pricing_note", "按远控防火阀报价");
 			EquipmentFraction base;
 			if (calculated != null) {
 				BigDecimal cost = calculated.amount();
@@ -904,6 +951,10 @@ public final class EquipmentPricingEngine {
 					"attributes", a, "equipment_kind", kind, "payment", term, "freight_per_unit", "0",
 					"coverage", obj("installation", false, "freight", false), "tax_basis",
 					yes(options.get("tax_included")) ? "included" : "excluded", "rule", rule));
+		}
+		catch (ProductRuleCatalog.CombinationException e) {
+			out.put("reason", e.getMessage());
+			out.put("detail", e.detail);
 		}
 		catch (EquipmentFanSelector.SelectionException e) {
 			out.put("reason", e.getMessage());

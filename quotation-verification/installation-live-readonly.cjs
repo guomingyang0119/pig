@@ -42,9 +42,12 @@ const fs = require('node:fs'), path = require('node:path'), assert = require('no
     // 如已有草稿，记录其 revision 后仅打开查看整单运费控件，不能保存更改。
     const existing = await page.evaluate(async () => {
       const { quoteApi } = await import('/src/api/quotation/index.ts');
-      const quotes = await quoteApi.list();
-      const draft = quotes.find(q => q.state === 'draft');
-      return draft ? { id: draft.id, revision: draft.revision } : null;
+      for (let page = 1; ; page++) {
+        const result = await quoteApi.listPage(false, page, 100);
+        const draft = result.records.find(q => q.state === 'draft');
+        if (draft) return { id: draft.id, revision: draft.revision };
+        if (page * 100 >= result.total) return null;
+      }
     });
     if (existing) {
       await page.goto('http://127.0.0.1:8888/#/quotation/workbench/index?id=' + existing.id);

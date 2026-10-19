@@ -243,7 +243,7 @@ class EquipmentPricingEngineTests {
 		assertTrue(n(detail.get("remote_extra")).signum() > 0);
 		assertEquals(0, n(map(detail.get("components")).get("mechanism"))
 				.compareTo(add(n(detail.get("mechanism_base")), n(detail.get("remote_extra")))));
-		assertEquals("(" + s(detail, "mechanism_base") + " + " + s(detail, "remote_extra") + ") × 1",
+		assertEquals(s(detail, "mechanism_base") + " + " + s(detail, "remote_extra") + " × 1",
 				s(map(detail.get("component_formulas")), "mechanism"));
 	}
 
@@ -328,12 +328,25 @@ class EquipmentPricingEngineTests {
 			fixture = new ObjectMapper().readValue(in, Map.class);
 		}
 		var cases = list(fixture.get("cases"));
+		Map<String, Object> dimensions = new ObjectMapper().readValue(getClass().getResourceAsStream("/quotation/dimension-order-golden.json"), Map.class);
 		return cases.stream()
 			.map(c -> DynamicTest.dynamicTest(s(c, "name"), () -> {
 			var engine = new EquipmentPricingEngine();
 			var q = map(c.get("quote"));
 			var resources = list(map(fixture.get("catalogs")).get(s(c, "resources_key")));
 			var expected = frozenExpectedWithConfirmedSplice(c, cases);
+			for (int i = 0; i < list(expected.get("rows")).size(); i++) {
+				var correction = map(dimensions.get(s(c, "name") + ":" + i));
+				if (correction.isEmpty()) continue;
+				var corrected = list(expected.get("rows")).get(i);
+				corrected.put("attributes", new LinkedHashMap<>(map(correction.get("attributes"))));
+				if (correction.containsKey("detail")) {
+					corrected.put("detail", new ObjectMapper().convertValue(correction.get("detail"), Map.class));
+					var rates = map(map(resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog")).findFirst().orElseThrow().get("body")).get("rates"));
+					updateFrozenValvePrice(q, rates, corrected);
+					updateFrozenEquipmentTotal(expected);
+				}
+			}
 			applyConfirmedValveMechanisms(q, resources, expected);
 			applyConfirmedValveSplices(q, resources, expected);
 			applyConfirmedRoundValveCost(q, resources, expected);
@@ -412,7 +425,8 @@ class EquipmentPricingEngineTests {
 			BigDecimal base = frozenDecimal(kind.equals("plate_smoke") ? rates.get("near_control")
 					: map(map(catalog.get("valves")).get(kind)).get("mechanism"));
 			assertFalse(map(input.get("attributes")).containsKey("mechanism_cost"));
-			BigDecimal mechanism = base.add(control.equals("remote") ? new BigDecimal("40") : BigDecimal.ZERO).multiply(count);
+			BigDecimal mechanism = base.multiply(kind.equals("plate_smoke") ? count : BigDecimal.ONE)
+					.add((control.equals("remote") ? new BigDecimal("40") : BigDecimal.ZERO).multiply(count));
 			var detail = map(row.get("detail"));
 			var components = map(detail.get("components"));
 			components.put("mechanism", mechanism.toPlainString());
@@ -644,23 +658,23 @@ class EquipmentPricingEngineTests {
 	 */
 	private static void applyConfirmedPressureSupplyCost(Map<String, Object> expected) {
 		var row = list(expected.get("rows")).get(0);
-		String unit = text(n("220.440906083").divide(n("0.75"), MC));
-		String supplyAmount = text(n("220.440906083").multiply(n(2)).divide(n("0.75"), MC));
-		row.putAll(obj("unit_cost", "220.440906083", "supply_unit_unrounded", unit,
-				"supply_amount_unrounded", supplyAmount, "unit_price", "294", "amount", "588", "body_amount", "588"));
+		String unit = text(n("240.440906083").divide(n("0.75"), MC));
+		String supplyAmount = text(n("240.440906083").multiply(n(2)).divide(n("0.75"), MC));
+		row.putAll(obj("unit_cost", "240.440906083", "supply_unit_unrounded", unit,
+				"supply_amount_unrounded", supplyAmount, "unit_price", "321", "amount", "642", "body_amount", "642"));
 		map(row.get("attributes")).put("height", "2050");
 		map(map(row.get("detail")).get("components")).putAll(obj("multi_frame", "54.5771250",
 				"multi_blade", "14.838394833", "labor", "31", "link", "1.0975475", "shaft", "6.6",
 				"consumables", "4.5875", "multi_brace", "5.63787", "multi_back", "1.54546875",
-				"mechanism", "40", "splice", "0", "panel", "60.557"));
+				"mechanism", "20", "splice", "40", "panel", "60.557"));
 		var trace = list(row.get("trace"));
-		var values = List.of("220.440906083", unit, unit, "0", "294", "588");
+		var values = List.of("240.440906083", unit, unit, "0", "321", "642");
 		assertEquals(values.size(), trace.size());
 		for (int i = 0; i < values.size(); i++)
 			trace.get(i).put("value", values.get(i));
 		for (String field : List.of("subtotal", "material_total", "equipment_material_total", "total", "before_payment_total"))
-			expected.put(field, "588");
-		map(map(expected.get("fees")).get("equipment_freight")).put("equipment_subtotal", "588");
+			expected.put(field, "642");
+		map(map(expected.get("fees")).get("equipment_freight")).put("equipment_subtotal", "642");
 	}
 
 	// 只兼容这个旧缺成本提示增加的两个已知原因，其余原因、待确认状态及所有金额仍逐项核对。

@@ -49,10 +49,6 @@ spring:
               uri: lb://pig-quartz
               predicates:
                 - Path=/job/**
-            - id: pig-monitor
-              uri: lb://pig-monitor
-              predicates:
-                - Path=/monitor/**
   config:
     import:
       - optional:nacos:application-@profiles.active@.yml
