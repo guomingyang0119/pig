@@ -91,6 +91,11 @@ final class QuoteReviewImportService {
 						booleanValue(metaRow.getCell(3), evaluator)));
 				String scope = sourceScopes.getOrDefault(s(current, "source_row_id"), cellText(metaRow.getCell(15), evaluator));
 				if (scope.isEmpty()) scope = "quoted";
+				// 系统另列的安装项目和现场附加费没有材料供货，旧导出未写范围时仍按安装费用核对。
+				if (s(current, "source_row_id").isBlank() && blank(baseline.get("material_unit"))
+						&& blank(baseline.get("material_amount")) && !blank(baseline.get("installation_amount"))
+						&& (s(baseline, "process").equals("安装") || s(baseline, "name").equals("现场附加费") && s(baseline, "process").equals("整单汇总")))
+					scope = "installation_only";
 				if (!Set.of("quoted", "excluded", "installation_only").contains(scope)) throw new RuleException("校对版报价范围无法识别");
 				current.putAll(obj("scope", scope, "exclude_reason", cellText(metaRow.getCell(16), evaluator)));
 				baseline.put("scope", scope);
@@ -163,6 +168,12 @@ final class QuoteReviewImportService {
 						rowChanges.add(change);
 					}
 				}
+				if (required && rowChanges.stream().anyMatch(change -> s(change, "kind").equals("manual")
+						&& Set.of("quantity", "material_unit", "material_amount").contains(s(change, "field")))
+						&& normalizeMaterialAmount(current, visibleRow, derivedFields, rowChanges)) {
+					var derived = rowChanges.stream().filter(change -> yes(change.get("price_consistency"))).toList();
+					changes.addAll(derived); derivedChanges += derived.size(); priceChanged = true;
+				}
 				if (changed)
 					changedRows++;
 				current.putAll(obj("sequence", visibleRow - 9, "pending", required && !complete, "changed", changed,
@@ -197,7 +208,7 @@ final class QuoteReviewImportService {
 					"parameter_input_format", "main_parameters_v1".equals(properties.get("parameter_format")),
 					"location_text", cellText(visible.getRow(5) == null ? null : visible.getRow(5).getCell(columns == 10 ? 5 : 6), evaluator),
 					"template_version", properties.get("template_version"), "column_count", columns, "lines", lines,
-					"changes", changes, "scope_restorations", restorations, "change_count", manualChanges, "derived_count", derivedChanges,
+					"changes", changes, "price_conflicts", priceConflicts(lines), "scope_restorations", restorations, "change_count", manualChanges, "derived_count", derivedChanges,
 					"changed_row_count", changedRows, "unchanged_count", unchanged,
 					"line_count", lines.size(), "pending_count", pending, "material_total", text(materialTotal),
 					"equipment_freight_total", text(equipmentFreightTotal),
@@ -230,6 +241,49 @@ final class QuoteReviewImportService {
 		}
 		parsed.put("scope_restorations", list(parsed.get("scope_restorations")).stream()
 				.filter(item -> !ids.contains(s(item, "source_row_id"))).toList());
+		return summarize(parsed);
+	}
+
+	/** 以单价为默认口径；保留Excel总价必须逐行明确选择，反算单价，避免留下相互矛盾的三个数字。 */
+	static void acceptFixedAmounts(Map<String, Object> parsed, Object requested) {
+		if (!(requested instanceof List<?> values)) throw new RuleException("保留人工总价的确认格式不正确");
+		Map<String, Map<String, Object>> candidates = new HashMap<>();
+		for (var line : list(parsed.get("lines")))
+			if (!blank(line.get("uploaded_material_amount"))) candidates.put(s(line, "source_row_id"), line);
+		Set<String> seen = new HashSet<>();
+		for (Object value : values) {
+			if (!(value instanceof Map<?, ?> raw)) throw new RuleException("保留人工总价的确认格式不正确");
+			var choice = map(raw); String id = s(choice, "row_id"), reason = s(choice, "reason");
+			var line = candidates.get(id);
+			if (line == null || !seen.add(id) || reason.isEmpty() || reason.length() > 500)
+				throw new RuleException("请对存在金额冲突的产品逐行选择并填写500字以内的人工总价原因");
+			if (yes(parsed.get("input_recalculated"))) throw new RuleException("参数重算不能同时保留旧人工总价，请重新导出价格校对版");
+			BigDecimal quantity = amount(line.get("quantity")), total = amount(line.get("uploaded_material_amount"));
+			if (quantity.signum() <= 0) throw new RuleException("保留人工总价时数量必须大于0");
+			var choices = new ArrayList<>(list(parsed.get("changes")));
+			choices.add(obj("line", line.get("visible_row"), "product", line.get("name"), "field", "material_amount", "label", "确认保留材料总价", "before", line.get("material_amount"), "after", text(total), "kind", "manual"));
+			choices.add(obj("line", line.get("visible_row"), "product", line.get("name"), "field", "fixed_amount_reason", "label", "保留总价原因", "before", "", "after", reason, "kind", "manual"));
+			parsed.put("changes", choices);
+			line.putAll(obj("material_amount", text(total), "material_unit", total.divide(quantity, 8, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(),
+					"fixed_amount_reason", reason, "price_changed", true));
+			if (n(parsed.get("column_count")).intValue() != 10)
+				line.put("line_total", text(add(total, amount(line.get("installation_amount")))));
+		}
+		summarize(parsed);
+	}
+
+	/** 旧预览在应用时同样复核费用完整性，不能依赖旧版本生成的pending标记。 */
+	static void refreshCompleteness(Map<String, Object> parsed) {
+		for (var line : list(parsed.get("lines"))) {
+			if (s(line, "scope").equals("excluded") && !yes(line.get("scope_restore_required"))) { line.put("pending", false); continue; }
+			boolean required = yes(line.get("was_pending")) || !blank(line.get("material_amount")) || !blank(line.get("installation_amount"));
+			line.put("pending", !complete(line, n(line.get("visible_row")).intValue(), required,
+					n(parsed.get("column_count")).intValue() != 10, new LinkedHashSet<>()));
+		}
+		summarize(parsed);
+	}
+
+	private static Map<String, Object> summarize(Map<String, Object> parsed) {
 		BigDecimal material = ZERO, freight = ZERO, installationTotal = ZERO;
 		int pending = 0, unchanged = 0;
 		for (var line : list(parsed.get("lines"))) {
@@ -245,6 +299,34 @@ final class QuoteReviewImportService {
 		parsed.putAll(obj("pending_count", pending, "unchanged_count", unchanged, "material_total", text(material), "equipment_freight_total", text(freight),
 				"installation_total", text(installationTotal), "before_payment_total", total, "subtotal", total));
 		return parsed;
+	}
+
+	private static List<Map<String, Object>> priceConflicts(List<Map<String, Object>> lines) {
+		return lines.stream().filter(line -> !blank(line.get("uploaded_material_amount")))
+				.map(line -> obj("source_row_id", line.get("source_row_id"), "visible_row", line.get("visible_row"), "name", line.get("name"),
+						"uploaded_amount", line.get("uploaded_material_amount"), "calculated_amount", line.get("material_amount"),
+						"reason", "Excel材料金额与数量×单价不一致，默认按数量×单价重算；保留谈定总价需填写原因，并反算单价"))
+				.toList();
+	}
+
+	private static boolean normalizeMaterialAmount(Map<String, Object> line, int row, Set<String> derived, List<Map<String, Object>> changes) {
+		if (blank(line.get("material_unit")) || blank(line.get("material_amount"))) return false;
+		BigDecimal quantity = amount(line.get("quantity"));
+		if (quantity.signum() <= 0) return false;
+		String uploaded = s(line, "material_amount"), expected = text(amount(line.get("material_unit")).multiply(quantity, MC));
+		if (amount(uploaded).subtract(amount(expected)).abs().compareTo(new BigDecimal("0.000001")) <= 0) return false;
+		line.putAll(obj("uploaded_material_amount", uploaded, "material_amount", expected)); derived.add("material_amount");
+		changes.add(obj("line", row, "product", line.get("name"), "field", "material_amount", "label", "材料金额（按数量×单价）", "before", uploaded,
+				"after", expected, "kind", "derived", "price_consistency", true));
+		if (!blank(line.get("installation_amount"))) {
+			String total = text(add(amount(expected), amount(line.get("installation_amount"))));
+			if (!total.equals(s(line, "line_total"))) {
+				changes.add(obj("line", row, "product", line.get("name"), "field", "line_total", "label", "本行报价", "before", line.get("line_total"),
+						"after", total, "kind", "derived", "price_consistency", true));
+				line.put("line_total", total); derived.add("line_total");
+			}
+		}
+		return true;
 	}
 
 	/** 人工金额补齐后移除已解决的待确认提示和内部校对逻辑行，同时保留客户正常备注。 */
@@ -348,7 +430,7 @@ final class QuoteReviewImportService {
 		completePair(line, "material_unit", "material_amount", quantity, row, derivedFields);
 		if (installation && blank(line.get("installation_amount")))
 			return false;
-		if (blank(line.get("material_amount")) && blank(line.get("installation_amount")))
+		if (!s(line, "scope").equals("installation_only") && blank(line.get("material_amount")))
 			return false;
 		if (installation) {
 			String total = text(add(amount(line.get("material_amount")), amount(line.get("installation_amount"))));

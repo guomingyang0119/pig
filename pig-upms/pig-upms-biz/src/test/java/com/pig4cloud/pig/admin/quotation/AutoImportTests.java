@@ -92,7 +92,7 @@ class AutoImportTests {
 		assertEquals(description, ((List<?>) map(row.get("original")).get("cells")).get(2));
 	}
 
-	/** 项目名称缺少工况时保留缺项，项目特征只作为按需参考的原始证据。 */
+	/** 主名称缺少工况时仅补明确技术参数，施工要求保留原文，不并入规格或备注。 */
 	@Test
 	void fanDescriptionSeparatesModelPerformanceAndBusinessRequirements() {
 		String description = "1.名称：轴流风机\n2.规格：SWF-I-7 风量27500m³/h、功率11Kw、转速2900r/min\n3.支架材质、规格：型钢（综合）\n4.风机软接口风管：满足设计及规范要求";
@@ -101,7 +101,12 @@ class AutoImportTests {
 				obj("number", 2, "cells", List.of("1", "轴流风机", description, "台", "4"), "issues", List.of())));
 		var row = list(new DuctImportService().buildWorkbook(List.of(sheet), null).get("rows")).get(0);
 		assertEquals("", row.get("spec"));
-		for (String field : List.of("model", "airflow", "power", "speed")) assertTrue(blank(attr(row, field)));
+		assertEquals("SWF-I-7", attr(row, "model"));
+		assertEquals("27500", attr(row, "airflow"));
+		assertEquals("11", attr(row, "power"));
+		assertEquals("2900", attr(row, "speed"));
+		assertTrue(blank(attr(row, "pressure")));
+		assertFalse(s(row, "source_text").contains("支架"));
 		assertEquals("", s(row, "remark"));
 		assertEquals(description, EngineeringImportReview.source(row).get("feature_description"));
 		assertEquals("4", row.get("quantity"));

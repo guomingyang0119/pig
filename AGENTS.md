@@ -63,3 +63,11 @@ The following four rules apply to all tasks and take precedence over other defau
 - Convert vague instructions into verifiable goals — prefer tests as the success criterion
 - "Fix a bug" → write a failing test that reproduces it, then make it pass
 - "Add validation" → write tests covering invalid inputs, then make them pass
+
+## OpenSpec 默认开发流程
+
+- 新功能、业务规则调整和跨模块修改，默认采用 OpenSpec：先形成方案与验收条件，用户确认后再实现，测试完成并记录结果后归档。
+- 简单文案、格式修改可以直接处理。
+- 规范、方案、任务清单统一使用中文。
+- 不确定的业务规则先向用户提出问题，并说明具体问题和不确定点。
+- 验收要求覆盖正常、异常和边界情况，并记录实际测试结果。

@@ -40,6 +40,30 @@ public final class EquipmentCatalog {
 	private static final Set<String> LOUVERS = Set.of("single", "single_valve", "single_mesh", "double", "double_valve",
 			"double_mesh", "rain", "rain_mesh", "gravity", "gravity_valve", "access", "hinged", "hinged_mesh",
 			"diffuser", "diffuser_valve", "linear", "linear_valve", "abs_single", "abs_double", "abs_hinged_mesh");
+	private static final Map<String, List<String>> ADDITIONAL_LOUVERS = Map.of(
+			"mesh_outlet", List.of("160", "14", "60", "1"), "egg_grid", List.of("120", "14", "60", "1"));
+	private static final Map<String, String> LOUVER_SUPPLY_FACTORS = Map.of("egg_grid_mesh", "1.2", "egg_grid_valve", "2");
+
+	/** 仅供新建/修订草稿及明确同步最新指标使用，不写已发布版本；人工维护的其他三项始终保留。 */
+	public static void supplementLouvers(Map<String, Object> body, boolean applyLatestPrices) {
+		var costs = new LinkedHashMap<>(map(body.get("louvers")));
+		ADDITIONAL_LOUVERS.forEach(costs::putIfAbsent);
+		if (applyLatestPrices) {
+			var prices = new LinkedHashMap<String, String>();
+			prices.put("single", "70"); prices.put("double", "80"); prices.put("rain", "80"); prices.put("gravity", "80");
+			prices.put("single_valve", "70"); prices.put("double_mesh", "80");
+			prices.forEach((key, rate) -> {
+				if (costs.get(key) instanceof List<?> values && values.size() == 4) {
+					List<Object> changed = new ArrayList<>(values); changed.set(0, rate); costs.put(key, changed);
+				}
+			});
+			body.put("louver_price_batch", "louvers-20261021");
+		}
+		body.put("louvers", costs);
+		var factors = new LinkedHashMap<>(map(body.get("louver_supply_factors")));
+		LOUVER_SUPPLY_FACTORS.forEach(factors::putIfAbsent);
+		body.put("louver_supply_factors", factors);
+	}
 
 	// 设备运费地区系数仅覆盖已确认的六省区，不能自动推算其他地区。
 	public static final Set<String> REGIONS = Set.of("贵州", "四川", "广西", "云南", "陕西", "海南");
@@ -118,6 +142,19 @@ public final class EquipmentCatalog {
 					|| values.stream().anyMatch(v -> n(v).signum() < 0))
 				throw new RuleException("风口面积成本配置不正确：" + key);
 		}
+		// 旧发布版本可没有新品；补充草稿后才发布新版本，禁止读旧报价时补造价格。
+		for (String key : ADDITIONAL_LOUVERS.keySet()) {
+			Object entry = map(b.get("louvers")).get(key);
+			if (entry == null) continue;
+			if (!(entry instanceof List<?> values) || values.size() != 4 || values.stream().anyMatch(v -> n(v).signum() < 0))
+				throw new RuleException("风口面积成本配置不正确：" + key);
+		}
+		if (b.containsKey("louver_supply_factors")) {
+			var factors = map(b.get("louver_supply_factors"));
+			if (!factors.keySet().equals(LOUVER_SUPPLY_FACTORS.keySet()))
+				throw new RuleException("风口供货售价倍率仅支持蛋格带网和蛋格带阀");
+			for (var entry : factors.entrySet()) positive(entry.getValue(), "风口供货售价倍率 " + entry.getKey());
+		}
 		// 列表编号用于选型与候选确认，同一列表内必须非空且唯一。
 		for (String kind : List.of("materials", "fan_points", "fan_bodies", "motors", "purchased")) {
 			if (!(b.get(kind) instanceof List<?>))
@@ -182,6 +219,7 @@ public final class EquipmentCatalog {
 			if (blank(row.get("model")))
 				throw new RuleException("外购设备基础价不完整");
 		}
+		FireWrapSales.validate(b);
 		// 防爆档位按成本上限递增，末档不设上限；实际计算时上限包含本数。
 		List<Map<String, Object>> tiers = list(b.get("explosion_tiers"));
 		if (tiers.isEmpty() || tiers.get(tiers.size() - 1).get("limit") != null)

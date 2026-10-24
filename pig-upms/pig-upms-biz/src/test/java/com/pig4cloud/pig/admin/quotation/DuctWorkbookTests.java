@@ -67,10 +67,11 @@ class DuctWorkbookTests {
 				Map.class);
 		List<Map<String, Object>> rows = new ArrayList<>();
 		for (int i = 0; i < count; i++) {
-			var attributes = obj("thickness", "0.75", "diameter", "500", "round_flange_count", "3");
+			var attributes = obj("thickness", "0.75", "duct_cross_section", flange.equals("round") ? "circular" : "rectangular");
+			if (flange.equals("round")) attributes.putAll(obj("diameter", "500", "round_flange_count", "3"));
 			if (actualFlangeMeters != null)
 				attributes.put("flange_meters", actualFlangeMeters);
-			rows.add(obj("row_id", "row-" + i, "name", "镀锌风管", "spec", "0.75 / 800×320", "category", "风管", "engineering_quantity", "100",
+			rows.add(obj("row_id", "row-" + i, "name", "镀锌风管", "spec", flange.equals("round") ? "0.75 / Φ500" : "0.75 / 800×320", "category", "风管", "engineering_quantity", "100",
 					"unit", "㎡", "attributes", attributes,
 					"remark", "客户备注", "installation", obj("unit_price", "2.031")));
 		}
@@ -116,7 +117,7 @@ class DuctWorkbookTests {
 	}
 
 	/**
-	 * 验证校对版显示风管、圆法兰和安装的代入数字明细；人工改价后原主行轨迹退出，未改附项轨迹继续保留。
+	 * 验证校对版显示圆管含法兰及安装的代入数字明细；人工改价后原主行轨迹退出，未改安装附项轨迹继续保留。
 	 * 正式文件不包含内部计算明细页。
 	 */
 	@Test
@@ -125,8 +126,10 @@ class DuctWorkbookTests {
 		byte[] review = exporter.write(body, result, "TEST-CALCULATION", false,
 				obj("quote_id", "quote-calculation", "revision", 1, "family", "family-calculation", "version", 1));
 		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(review))) {
-			assertTrue(wb.getSheetAt(0).getRow(9).getCell(12).getStringCellValue()
-				.contains("系统计价逻辑：风管（半成品、直管、圆法兰）"));
+			String remark = wb.getSheetAt(0).getRow(9).getCell(12).getStringCellValue();
+			assertTrue(remark.contains("圆形风管"), remark);
+			assertTrue(remark.contains("已含法兰"), remark);
+			assertFalse(remark.contains("；null"), remark);
 			Sheet details = wb.getSheet("计算明细");
 			assertNotNull(details);
 			assertTrue(details.getRow(0).getCell(0).getStringCellValue().startsWith("镀锌风管"));
@@ -143,10 +146,11 @@ class DuctWorkbookTests {
 			assertTrue(text.toString().contains("0.75 × "));
 			assertTrue(text.toString().contains("吨价"));
 			assertFalse(text.toString().contains("material_price + processing"), "不能把程序公式原样给用户看");
-			assertTrue(text.toString().contains("圆法兰"));
-			assertTrue(text.toString().contains("直径 500mm ÷ 1000 × 圆法兰材料价"),
-					"独立圆法兰行应写明按实际直径计算的单价");
-			assertTrue(text.toString().contains("按客户清单中的实际数量另列"));
+			assertTrue(text.toString().contains("方形直管基准单价/㎡"));
+			assertTrue(text.toString().contains("圆形风管半成品单价/㎡"));
+			assertTrue(text.toString().contains("+ 30（已含法兰）"));
+			assertFalse(text.toString().contains("圆法兰报价/个"), "圆管不再按个数另收法兰费用");
+			assertNull(list(result.get("rows")).get(0).get("round_flange_amount"));
 			assertTrue(text.toString().contains("安装人工"));
 			assertTrue(text.toString().contains("安装计算明细"));
 			assertTrue(text.toString().contains("向上取整(0.03 × 1.01)"));
@@ -170,8 +174,9 @@ class DuctWorkbookTests {
 						explanation.append(cell.getStringCellValue()).append(' ');
 			assertTrue(explanation.toString().contains("人工校对"));
 			assertFalse(explanation.toString().contains("铁皮材料价/㎡"), "人工改价后不能再显示旧试算作为该行依据");
-			assertTrue(explanation.toString().contains("直径 500mm ÷ 1000 × 圆法兰材料价"),
-					"未改价的附加行仍应保留原计算明细");
+			assertFalse(explanation.toString().contains("圆形风管半成品单价/㎡"), "人工改价后不能继续显示旧材料报价依据");
+			assertTrue(explanation.toString().contains("向上取整(0.03 × 1.01)"),
+					"未改价的现场附加费仍应保留原计算明细");
 		}
 		try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(exporter.write(body, result, "TEST-CALCULATION", true)))) {
 			assertNull(wb.getSheet("计算明细"));
@@ -297,7 +302,7 @@ class DuctWorkbookTests {
 										() -> assertEquals("备注", sh.getRow(8).getCell(12).getStringCellValue()));
 							assertEquals(CellType.STRING, sh.getRow(4).getCell(1).getCellType());
 							assertEquals("=1+1", sh.getRow(4).getCell(1).getStringCellValue());
-							int lines = count * (flange.equals("round") ? 2 : 1) + (installation ? 1 : 0);
+							int lines = count + (installation ? 1 : 0);
 							BigDecimal sum = ZERO;
 							for (int r = 9; r < 9 + lines; r++) {
 								for (Cell c : sh.getRow(r))
@@ -316,7 +321,7 @@ class DuctWorkbookTests {
 								}
 								else if (materialAmount.getCellType() == CellType.NUMERIC)
 									sum = sum.add(BigDecimal.valueOf(materialAmount.getNumericCellValue()));
-								assertEquals(r < 9 + count * (flange.equals("round") ? 2 : 1) ? "0.0" : "0.0########",
+									assertEquals(r < 9 + count ? "0.0" : "0.0########",
 										sh.getRow(r).getCell(7).getCellStyle().getDataFormatString());
 							}
 							assertEquals(0, n(result.get("before_payment_total")).compareTo(sum),
@@ -356,6 +361,12 @@ class DuctWorkbookTests {
 								assertTrue(text.toString().contains("含角码卡扣"));
 							if (flange.equals("angle"))
 								assertTrue(text.toString().contains("含角钢法兰"));
+							if (flange.equals("round")) {
+								assertTrue(text.toString().contains("圆形风管"));
+								assertTrue(text.toString().contains("已含法兰"));
+								assertFalse(text.toString().contains("圆法兰按客户数量另列"));
+								assertFalse(text.toString().contains("；null"));
+							}
 							assertFalse(text.toString().contains("no_install_days_15"));
 							assertTrue(text.toString().contains("人民币"));
 							assertTrue(sh.getPrintSetup().getLandscape());

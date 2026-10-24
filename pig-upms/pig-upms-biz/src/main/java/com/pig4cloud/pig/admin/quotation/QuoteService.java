@@ -86,7 +86,8 @@ public class QuoteService {
 			case "mixed_v1" -> EquipmentPricingEngine.MIXED_VERSION;
 			default -> DuctPricingEngine.VERSION;
 		};
-		return !result.isEmpty() && (!version.equals(s(result, "engine_version"))
+		return !result.isEmpty() && (!QuoteCalculationInputs.fingerprint(body).equals(s(result, "pricing_input_fingerprint"))
+				|| !version.equals(s(result, "engine_version"))
 				|| (result.containsKey("product_rule_engine_version")
 						&& !ProductRuleCatalog.VERSION.equals(s(result, "product_rule_engine_version")))
 				|| !InstallationPricingEngine.VERSION.equals(s(result, "installation_engine_version"))
@@ -99,6 +100,7 @@ public class QuoteService {
 	 */
 	private Map<String, Object> compute(Map<String, Object> body, List<Map<String, Object>> resources,
 			Map<String, Object> policy) {
+		LocalDate validationDay = validationDate();
 		QuoteRegion.requireConfirmed(body);
 		QuoteRegion.sync(body);
 		Boolean freight = freightIncluded(body);
@@ -106,7 +108,7 @@ public class QuoteService {
 			throw new RuleException("请统一选择整单是否含运费后重新试算");
 		// 先解析生效的产品别名/组合规则，再让原生计价引擎处理实际产品和结算。
 		applyFreight(body, freight);
-		var rulePreparation = ProductRuleCatalog.preparation(resources, LocalDate.now());
+		var rulePreparation = ProductRuleCatalog.preparation(resources, validationDay);
 		var rows = list(body.get("rows")).stream()
 			.map(rulePreparation::prepare)
 			.toList();
@@ -135,24 +137,67 @@ public class QuoteService {
 		result.put("product_rule_engine_version", ProductRuleCatalog.VERSION);
 		resultRows.forEach(QuoteProblem::present);
 		result.put("catalog_bindings", catalogBindings(prepared, result, resources));
+		result.put("pricing_input_fingerprint", QuoteCalculationInputs.fingerprint(body));
+		// 计算跨日时不为旧日匹配签发新日凭据，下一次读取须完整复核。
+		if (validationDay.equals(validationDate()))
+			result.put(QuoteValidation.RECEIPT, QuoteValidation.issue(body, result, new QuoteValidation.Dependencies(resources, validationDay)));
 		return result;
 	}
+
+	LocalDate validationDate() { return LocalDate.now(); }
 
 	/** 连未匹配成功的行也记录参与查价的目录；补价、发布或停用后必须重算。 */
 	private List<Map<String, Object>> catalogBindings(Map<String, Object> body, Map<String, Object> result,
 			List<Map<String, Object>> resources) {
 		Set<String> kinds = new LinkedHashSet<>();
 		var rows = list(result.get("rows"));
+		var inputs = list(body.get("rows"));
 		for (int i = 0; i < rows.size(); i++) {
 			var row = rows.get(i);
 			if (Set.of("excluded", "installation_only").contains(s(row, "status")) || s(row, "pricing_mode").equals("manual_v1")) continue;
-			var input = i < list(body.get("rows")).size() ? list(body.get("rows")).get(i) : obj();
+			var input = i < inputs.size() ? inputs.get(i) : obj();
 			kinds.add(s(row, "pricing_mode").equals("equipment_v1") || !s(body, "pricing_mode").equals("duct_v1") && !s(input, "category").equals("风管") ? "equipment_catalog" : "duct_catalog");
 		}
 		if (InstallationPricingEngine.enabled(body)) kinds.add("installation_catalog");
+		kinds.addAll(installationPriceKinds(body, result, inputs, rows));
 		List<Map<String, Object>> bindings = new ArrayList<>();
 		for (String kind : kinds) bindings.add(obj("kind", kind, "ids", activeCatalogIds(kind, resources)));
 		return bindings;
+	}
+
+	/** 只安装的付款来源与包裹兼容价仍参与金额；不能因没有材料供货而漏记。 */
+	private static Set<String> installationPriceKinds(Map<String, Object> body, Map<String, Object> result,
+			List<Map<String, Object>> inputs, List<Map<String, Object>> calculatedRows) {
+		Set<String> kinds = new LinkedHashSet<>();
+		boolean scopeOnly = inputs.stream().noneMatch(row -> !yes(row.get("excluded")) && !yes(row.get("installation_only")));
+		if (scopeOnly && calculatedRows.stream().anyMatch(row -> s(row, "status").equals("installation_only")))
+			for (var row : inputs) if (!yes(row.get("excluded")) && yes(row.get("installation_only"))) {
+				boolean duct = s(body, "pricing_mode").equals("mixed_v1")
+						? s(row, "category").equals("风管") || blank(row.get("category")) && s(row, "name").contains("风管")
+						: s(body, "pricing_mode").equals("duct_v1") || s(result, "engine_version").startsWith("duct-");
+				kinds.add(duct ? "duct_catalog" : "equipment_catalog");
+			}
+		for (var line : list(map(map(result.get("fees")).get("installation")).get("lines"))) {
+			if (yes(line.get("manual")) || map(line.get("wrap_price_catalog")).isEmpty()) continue;
+			// 新安装指标已维护全国价时，不把仅用于兼容展示的设备引用误作价格依赖。
+			boolean equipmentPrice = s(line, "note").startsWith("旧版本兼容价") || blank(line.get("note"));
+			if (line.get("row_index") != null) {
+				int index = n(line.get("row_index")).intValue();
+				if (index >= 0 && index < inputs.size()) {
+					var row = inputs.get(index);
+					if (!blank(map(row.get("attributes")).get("wrap_product_id"))) {
+						var evidence = new LinkedHashMap<>(row);
+						var original = new LinkedHashMap<>(map(row.get("original")));
+						original.put("engineering_source", new LinkedHashMap<>(map(original.get("engineering_source"))));
+						evidence.put("original", original);
+						if (!QuoteParsingScope.pattern("玻璃棉|岩棉|硅酸钙(?:防火)?板|硅酸盐(?:防火)?板", 0)
+								.matcher(EngineeringImportReview.wrapMaterialText(evidence)).find()) equipmentPrice = true;
+					}
+				}
+			}
+			if (equipmentPrice) kinds.add("equipment_catalog");
+		}
+		return kinds;
 	}
 
 	private List<String> activeCatalogIds(String kind, List<Map<String, Object>> resources) {
@@ -198,18 +243,49 @@ public class QuoteService {
 	 * 用今天的生效规则重新匹配清单，与上次试算绑定比较。
 	 * 别名、组合规则或生效状态变化时，草稿结果需要重新试算。
 	 */
-	private boolean productRulesChanged(Map<String, Object> body, Map<String, Object> result,
-			List<Map<String, Object>> resources) {
-		if (result.isEmpty())
-			return false;
-		if (map(result.get("manual_review_import")).isEmpty() && !repo.json(result.getOrDefault("installation_rule_bindings", List.of()))
-				.equals(repo.json(InstallationProductRules.bindings(body, resources)))) return true;
-		var rulePreparation = ProductRuleCatalog.preparation(resources, LocalDate.now());
-		var rows = list(body.get("rows")).stream()
-			.map(rulePreparation::prepare)
-			.toList();
-		return !repo.json(result.getOrDefault("product_rule_bindings", List.of()))
-			.equals(repo.json(productRuleBindings(rows)));
+	/** 只属于当前读取或一个导出短事务；文件生成后的事务重新建立并读取全部依赖。 */
+	private final class ValidationContext {
+		final Map<String,Object> body, result;
+		final List<Map<String,Object>> resources;
+		final LocalDate date = LocalDate.now();
+		final QuoteValidation.Dependencies dependencies;
+		private List<Map<String,Object>> prepared;
+		private Boolean rulesChanged, reusable;
+		ValidationContext(Map<String,Object> body, Map<String,Object> result, List<Map<String,Object>> resources) {
+			this.body=body;this.result=result;this.resources=resources;
+			dependencies=new QuoteValidation.Dependencies(resources,date);
+		}
+		List<Map<String,Object>> preparedRows() {
+			if(prepared==null) {
+				var preparation=ProductRuleCatalog.preparation(resources,date);
+				prepared=list(body.get("rows")).stream().map(preparation::prepare).toList();
+			}
+			return prepared;
+		}
+		boolean reusable() {
+			if (reusable == null) reusable = QuoteValidation.reusable(body,result,dependencies);
+			return reusable;
+		}
+		boolean pricesChanged() {
+			if (result.isEmpty()) return false;
+			if (!reusable()) {
+				var recorded = new HashSet<String>();
+				for (var binding : list(result.get("catalog_bindings"))) recorded.add(s(binding, "kind"));
+				var currentBody = new LinkedHashMap<>(body);
+				currentBody.put("rows", preparedRows());
+				// 旧结果或认证证据不一致时，完整复核供货及安装实际依赖，不能以空绑定跳过。
+				for (var binding : catalogBindings(currentBody,result,resources))
+					if (!recorded.contains(s(binding,"kind"))) return true;
+			}
+			return QuoteValidation.pricesChanged(result,dependencies);
+		}
+		boolean rulesChanged() {
+			if(rulesChanged!=null)return rulesChanged;
+			if(result.isEmpty() || reusable()) return rulesChanged=false;
+			if(map(result.get("manual_review_import")).isEmpty() && !repo.json(result.getOrDefault("installation_rule_bindings",List.of()))
+				.equals(repo.json(InstallationProductRules.bindings(body,resources)))) return rulesChanged=true;
+			return rulesChanged=!repo.json(result.getOrDefault("product_rule_bindings",List.of())).equals(repo.json(productRuleBindings(preparedRows())));
+		}
 	}
 
 	private final DuctImportService importer = new DuctImportService();
@@ -264,7 +340,10 @@ public class QuoteService {
 	 * 需编辑时要求草稿状态，需写入时由调用方开启事务并请求行锁。
 	 */
 	private Map<String, Object> quote(String id, Actor actor, boolean lock, boolean editable) {
-		Map<String, Object> q = repo.find("quote_order", id, lock);
+		return checkedQuote(repo.find("quote_order", id, lock), actor, editable);
+	}
+
+	private Map<String, Object> checkedQuote(Map<String, Object> q, Actor actor, boolean editable) {
 		if (q == null || (!actor.manager() && Long.parseLong(str(q.get("owner_id"))) != actor.id()))
 			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "报价不存在或无权访问");
 		if (editable && !s(q, "state").equals("draft"))
@@ -321,11 +400,28 @@ public class QuoteService {
 			.toList();
 	}
 
+	/** 首页仅查询草稿数量，不加载规则正文；提醒范围仍限报价负责人。 */
+	public Map<String, Object> productRuleSummary(Actor actor) {
+		leader(actor);
+		return obj("draft_count", repo.scalar("SELECT COUNT(*) FROM quote_catalog WHERE kind='product_rule' AND status='draft'", Long.class));
+	}
+
+	/** 只读预览当前页面清单可复用正式规则的行，使用与整单报价相同的匹配器。 */
+	public Map<String, Object> previewProductRuleApplication(Actor actor, String id, Map<String, Object> data) {
+		try (var parsing = QuoteParsingScope.open()) {
+			return ProductRuleCatalog.applicationPreview(id, list(productRuleInputs(actor,data,"rows").get("rows")), repo.catalogs(), LocalDate.now());
+		}
+	}
+
 	/**
 	 * 根据当前产品行推荐规则和编辑模板，并返回操作者是否可发布。
 	 */
 	public Map<String, Object> productRuleRecommendations(Actor actor, Map<String, Object> data) {
-		data = repo.object(repo.json(data));
+		try (var parsing = QuoteParsingScope.open()) { return productRuleRecommendationsParsed(actor,data); }
+	}
+
+	private Map<String, Object> productRuleRecommendationsParsed(Actor actor, Map<String, Object> data) {
+		data = productRuleInputs(actor,data,"context_rows");
 		QuoteRegion.sync(data);
 		var resources = repo.catalogs();
 		var row = repo.object(repo.json(map(data.get("row"))));
@@ -345,13 +441,23 @@ public class QuoteService {
 				ProductRuleCatalog.recommendations(row, resources, LocalDate.now()),
 				"catalog_rates", ProductRuleCatalog.catalogRates(), "can_publish", actor.manager(), "fan_input",
 				FanInputGuidance.describe(row, prepared, resources, LocalDate.now(), null), "parameter_input",
-				ProductInputGuidance.describe(row, definition, AcousticRegionalCost.withRegion(catalogs.size() == 1 ? map(catalogs.get(0).get("body")) : obj(), map(data.get("equipment_options"))), map(data.get("duct_options"))),
+				ProductInputGuidance.describe(row, definition, AcousticRegionalCost.withRegion(catalogs.size() == 1 ? map(catalogs.get(0).get("body")) : obj(), map(data.get("equipment_options"))), ductInputOptions(data)),
 				"installation_input", ProductRuleInstallation.input(row, prepared, installationContext, resources, LocalDate.now(), null));
+	}
+
+	private static Map<String, Object> ductInputOptions(Map<String, Object> data) {
+		var options = new LinkedHashMap<>(map(data.get("duct_options")));
+		options.put("project_region", QuoteRegion.project(data));
+		return options;
 	}
 
 	/** 产品规则试算不保存指标或报价，金额沿用实际报价的税费、运费、安装和付款结算流程。 */
 	public Map<String, Object> trialProductRule(Actor actor, Map<String, Object> data) {
-		data = repo.object(repo.json(data));
+		try (var parsing = QuoteParsingScope.open()) { return trialProductRuleParsed(actor,data); }
+	}
+
+	private Map<String, Object> trialProductRuleParsed(Actor actor, Map<String, Object> data) {
+		data = productRuleInputs(actor,data,"context_rows");
 		QuoteRegion.sync(data);
 		Map<String, Object> definition = map(data.get("body"));
 		ProductRuleCatalog.validate(definition);
@@ -362,7 +468,7 @@ public class QuoteService {
 		var prepared = ProductRuleCatalog.prepareRow(row, resources, LocalDate.now());
 		var guidance = FanInputGuidance.describe(row, prepared, resources, LocalDate.now(), null);
 		var catalogs = EquipmentCatalog.active(resources, LocalDate.now());
-		var inputs = ProductInputGuidance.describe(row, definition, AcousticRegionalCost.withRegion(catalogs.size() == 1 ? map(catalogs.get(0).get("body")) : obj(), map(data.get("equipment_options"))), map(data.get("duct_options")));
+		var inputs = ProductInputGuidance.describe(row, definition, AcousticRegionalCost.withRegion(catalogs.size() == 1 ? map(catalogs.get(0).get("body")) : obj(), map(data.get("equipment_options"))), ductInputOptions(data));
 		var options = equipmentDefaults();
 		var duct = ductDefaults();
 		duct.putAll(map(data.get("duct_options")));
@@ -410,6 +516,45 @@ public class QuoteService {
 					"installation_detail", obj("status", "pending", "reason", installationFee.get("reason"), "amount", null)));
 		result.put("installation_input", ProductRuleInstallation.input(row, prepared, body, resources, LocalDate.now(), map(result.get("installation_detail"))));
 		return obj("result", result, "installation_fee", installationFee);
+	}
+
+	/** 将轻量页面输入与当前修订的权威原文合并，避免其他行原文缺失改变安装上下文和规则匹配。 */
+	private Map<String,Object> productRuleInputs(Actor actor, Map<String,Object> input, String rowsField) {
+		var data=repo.object(repo.json(input));
+		if(blank(data.get("quote_id"))) return data;
+		var q=checkedQuote(repo.findOrderInput(s(data,"quote_id")),actor,false);
+		revision(q,data);
+		var previous=list(map(q.get("body")).get("rows"));
+		var indexed=new HashMap<String,Map<String,Object>>();
+		for(var row:previous)
+			if(s(row,"row_id").isEmpty() || indexed.put(s(row,"row_id"),row)!=null)
+				conflict("原始行标识缺失或重复，请使用完整清单重新打开规则预览");
+		var rows=new ArrayList<Map<String,Object>>();
+		if(data.containsKey(rowsField)) {
+			if(!(data.get(rowsField) instanceof List<?>)) throw new RuleException("规则上下文行格式不正确");
+			var editable=list(data.get(rowsField));
+			if(editable.size()<previous.size() || editable.size()>10000) throw new RuleException("规则上下文不能删除原始行");
+			for(int i=0;i<editable.size();i++) {
+				var row=editable.get(i);
+				if(i<previous.size()) {
+					if(!s(row,"row_id").equals(s(previous.get(i),"row_id"))) throw new RuleException("规则上下文行顺序、标识或归属已变化");
+					rows.add(QuotePatch.overlay(previous.get(i),row));
+				}
+				else {
+					if(!blank(row.get("row_id"))) throw new RuleException("新增规则上下文行不能指定原始行标识");
+					rows.add(QuotePatch.overlay(obj(),row));
+				}
+			}
+		}
+		else rows.addAll(previous);
+		data.put(rowsField,rows);
+		if(data.containsKey("row")) {
+			var row=map(data.get("row"));
+			String rowId=s(row,"row_id");
+			if(!rowId.isEmpty() && !indexed.containsKey(rowId)) throw new RuleException("规则目标行不存在或不属于当前报价");
+			data.put("row",QuotePatch.overlay(indexed.getOrDefault(rowId,obj()),row));
+		}
+		return data;
 	}
 
 	private List<Map<String, Object>> productRuleInstallationContext(Map<String, Object> data, Map<String, Object> prepared,
@@ -520,8 +665,9 @@ public class QuoteService {
 			.toList();
 		if (!existing.isEmpty())
 			return obj("id", existing.get(0).get("id"), "existing", true);
-		return createCatalog(actor, repo.object(new String(DuctExportService.asset("duct-catalog-seed.json"),
-				java.nio.charset.StandardCharsets.UTF_8)));
+		var body = repo.object(new String(DuctExportService.asset("duct-catalog-seed.json"), java.nio.charset.StandardCharsets.UTF_8));
+		DuctRegionalPrices.supplement(body);
+		return createCatalog(actor, body);
 	}
 
 	/**
@@ -542,6 +688,8 @@ public class QuoteService {
 		PurchasedEquipment.supplement(body, repo.object(new String(DuctExportService.asset("purchased-ventilators-20261010.json"),
 				java.nio.charset.StandardCharsets.UTF_8)));
 		body.put("acoustic_region_costs", acousticRegionCosts());
+		FireWrapSales.supplement(body);
+		EquipmentCatalog.supplementLouvers(body, false);
 		body.putAll(repo.object(new String(DuctExportService.asset("fan-ranges-20261014.json"),
 				java.nio.charset.StandardCharsets.UTF_8)));
 		body.put("effective_from", LocalDate.now().toString());
@@ -561,8 +709,14 @@ public class QuoteService {
 		leader(actor);
 		Map<String, Object> body = repo.object(new String(DuctExportService.asset("installation-catalog-seed.json"),
 				java.nio.charset.StandardCharsets.UTF_8));
+		supplementFireWrapInstallation(body);
 		body.put("effective_from", LocalDate.now().toString());
 		return body;
+	}
+
+	private void supplementFireWrapInstallation(Map<String, Object> body) {
+		var equipment = EquipmentCatalog.active(repo.catalogs(), LocalDate.now());
+		InstallationCatalog.supplementFireWrap(body, equipment.size() == 1 ? map(equipment.get(0).get("body")) : obj());
 	}
 
 	/**
@@ -576,6 +730,7 @@ public class QuoteService {
 		repo.catalogLock();
 		if (kind.equals("product_rule"))
 			ProductRuleCatalog.validate(body);
+		if (kind.equals("equipment_catalog")) EquipmentCatalog.supplementLouvers(body, false);
 		return insertCatalog(actor, kind, body);
 	}
 
@@ -625,7 +780,7 @@ public class QuoteService {
 		}
 		checkCatalogDraft(body);
 		repo.update("UPDATE quote_catalog SET body=?,revision=revision+1 WHERE id=?", repo.json(body), id);
-		repo.audit(actor, "edit_catalog", id, obj("previous_body", r.get("body")));
+		repo.audit(actor, "edit_catalog", id, obj("previous_body", r.get("body")), body);
 		return obj("revision", n(r.get("revision")).intValue() + 1);
 	}
 
@@ -656,13 +811,31 @@ public class QuoteService {
 				.max()
 				.orElse(0) + 1;
 			String next = uuid();
+			if (s(r, "kind").equals("duct_catalog")) DuctRegionalPrices.supplement(body);
+			if (s(r, "kind").equals("equipment_catalog")) {
+				FireWrapSales.supplement(body);
+				EquipmentCatalog.supplementLouvers(body, false);
+			}
+			if (s(r, "kind").equals("installation_catalog")) supplementFireWrapInstallation(body);
 			repo.update(
 					"INSERT INTO quote_catalog(id,family,kind,version,status,body,revision,created_by,created_at) VALUES(?,?,?,?,'draft',?,1,?,CURRENT_TIMESTAMP)",
 					next, r.get("family"), r.get("kind"), version, repo.json(body), actor.id());
 			repo.audit(actor, "revise_catalog", next, obj("from", id));
 			return obj("id", next);
 		}
-		if (action.equals("delete")) {
+		if (action.equals("load-fire-wrap-sales")) {
+			if (!status.equals("draft") || !s(r, "kind").equals("equipment_catalog"))
+				conflict("只有设备指标草稿可以载入防火包裹销售价");
+			FireWrapSales.supplement(body);
+			repo.update("UPDATE quote_catalog SET body=?,revision=revision+1 WHERE id=?", repo.json(body), id);
+		}
+		else if (action.equals("load-regional-prices")) {
+			if (!status.equals("draft") || !s(r, "kind").equals("duct_catalog"))
+				conflict("只有风管指标草稿可以载入地区吨价");
+			DuctRegionalPrices.supplement(body);
+			repo.update("UPDATE quote_catalog SET body=?,revision=revision+1 WHERE id=?", repo.json(body), id);
+		}
+		else if (action.equals("delete")) {
 			if (!status.equals("draft"))
 				conflict("只有指标草稿可以删除");
 			repo.update("DELETE FROM quote_catalog WHERE id=?", id);
@@ -721,7 +894,10 @@ public class QuoteService {
 				String end = blank(body.get("effective_to")) ? "9999-12-31" : s(body, "effective_to"),
 						otherEnd = blank(b.get("effective_to")) ? "9999-12-31" : s(b, "effective_to");
 				if (s(body, "effective_from").compareTo(otherEnd) <= 0 && s(b, "effective_from").compareTo(end) <= 0)
-					conflict(s(r, "kind").equals("product_rule") ? "相同产品名称、计价单位和适用条件已有生效规则，请调整条件或创建该规则的新版本"
+					conflict(s(r, "kind").equals("product_rule") ? "相同产品名称、计价单位和适用条件已有生效规则"
+							+ (FanRangeCostScope.enabled(body) || FanRangeCostScope.enabled(b)
+									? "（" + s(b, "name") + "，版本" + s(other, "version") + "，编号" + s(other, "id") + "）" : "")
+							+ "，请调整条件或创建该规则的新版本"
 							: "已有其他系列的生效指标，请先停用冲突系列");
 			}
 			repo.update(
@@ -774,6 +950,10 @@ public class QuoteService {
 				source.put("model_field_issues", raw.get("model_field_issues"));
 			if (!AiConfidencePolicy.metadata(raw).isEmpty())
 				source.put("ai_confidence", AiConfidencePolicy.metadata(raw));
+			for (String key : List.of("source_measurements", "source_context", "source_structural_corrections", "source_quantity_basis")) {
+				Object evidence = raw.containsKey(key) ? raw.get(key) : AiConfidencePolicy.metadata(raw).get(key);
+				if (evidence != null) source.put(key, evidence);
+			}
 		}
 		String importId = uuid();
 		List<String> sourceFiles = sources.stream().map(source -> s(source, "filename")).toList();
@@ -792,6 +972,25 @@ public class QuoteService {
 			int index = n(row.get("source_row")).intValue() - AiQuoteImportService.DETAIL_START_ROW;
 			if (index >= 0 && index < normalizedRows.size()) {
 				var raw = normalizedRows.get(index);
+				var context = map(map(row.get("original")).get("source_context"));
+				var sectionEvidence = map(context.get("shape"));
+				String section = s(sectionEvidence, "value");
+				if (Set.of("圆形", "矩形").contains(section) && sectionEvidence.containsKey("source_row") && sectionEvidence.containsKey("column")
+						&& s(sectionEvidence, "source_value").contains(section)
+						&& sectionEvidence.equals(map(map(AiConfidencePolicy.metadata(raw).get("source_context")).get("shape")))) {
+					String grouped = section.equals("圆形") ? "circular" : "rectangular";
+					String inline = s(raw, "name") + " " + s(raw, "spec");
+					String explicit = inline.matches("(?s).*(?:圆形|圆型|螺旋|矩形|方形|(?:[ΦφØøФф∅⌀]|DN|直径\\s*[:：=]?)\\s*\\d).*")
+							? DuctPricingEngine.crossSection(obj("name", raw.get("name"), "spec", raw.get("spec"), "attributes", obj())) : "";
+					if (!explicit.isBlank() && !explicit.equals(grouped)) {
+						map(row.get("attributes")).put("duct_cross_section", explicit);
+						String reason = s(sectionEvidence, "reason");
+						if (reason.isBlank()) reason = "行内明确截面与分组" + section + "不一致，请核对原资料";
+						String previous = s(row, "source_issue_reason");
+						row.putAll(obj("source_issue", true, "source_issue_confirmed", false, "source_issue_reason", previous.contains(reason) ? previous : previous + (previous.isBlank() ? "" : "；") + reason));
+					}
+					else if (!yes(sectionEvidence.get("conflict"))) map(row.get("attributes")).put("duct_cross_section", grouped);
+				}
 				if (blank(raw.get("quantity")) && !blank(raw.get("engineering_quantity"))
 						&& AiInputReview.validNumber(s(row, "quantity")) && AiInputReview.validNumber(s(raw, "engineering_quantity"))
 						&& n(row.get("quantity")).compareTo(n(raw.get("engineering_quantity"))) == 0
@@ -818,6 +1017,7 @@ public class QuoteService {
 	/** 相同原件只复用本人的已核验输入，新草稿仍需核验并按当前规则重新试算。 */
 	private void reuseConfirmedAiInputs(Actor actor, String quoteId, Map<String, Object> body,
 			List<Map<String, Object>> sources) {
+		if (list(body.get("rows")).stream().anyMatch(AiStructuredInput::applies)) return;
 		String fingerprint = aiSourceFingerprint(sources);
 		if (fingerprint.isEmpty()) return;
 		body.put("ai_source_fingerprint", fingerprint);
@@ -942,7 +1142,15 @@ public class QuoteService {
 		if (s(body, "ai_review_status").equals("approved"))
 			rows.forEach(row -> row.put("ai_confidence_reviewed", true));
 		int downloadRevision = n(quote.get("revision")).intValue();
-		String downloadId = uuid();
+		String downloadId;
+		try {
+			// 同一报价修订及内容共用基准；格式/解析版本变化时生成新基准，不覆盖旧文件依据。
+			downloadId = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(repo.json(obj(
+					"quote_id", id, "revision", downloadRevision, "format", AiQuoteImportService.INPUT_FORMAT,
+					"parser", AiQuoteReviewImportService.PARSER_VERSION, "rows", rows))
+					.getBytes(java.nio.charset.StandardCharsets.UTF_8))).substring(0, 32);
+		}
+		catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
 		byte[] workbook = AiQuoteImportService.standardWorkbook(rows, id, downloadRevision, downloadId);
 		var snapshot = obj("type", "ai_input_download_v1", "quote_id", id, "revision", downloadRevision,
 				"rows", AiQuoteReviewImportService.downloadRows(workbook));
@@ -951,8 +1159,12 @@ public class QuoteService {
 		repo.exportTransaction(() -> {
 			var current = quote(id, actor, true, false);
 			if (n(current.get("revision")).intValue() != downloadRevision) conflict("下载期间草稿已修改，请重新下载最新清单");
-			repo.update("INSERT INTO quote_import(id,owner_id,filename,parsed,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
-					downloadId, quote.get("owner_id"), "AI清单下载基准", serialized);
+			var existing = repo.find("quote_import", downloadId, false);
+			if (existing == null)
+				repo.update("INSERT INTO quote_import(id,owner_id,filename,parsed,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
+						downloadId, quote.get("owner_id"), "AI清单下载基准", serialized);
+			else if (!map(existing.get("parsed")).equals(snapshot))
+				conflict("清单下载格式已变化，请刷新后重新下载");
 			return null;
 		});
 		return workbook;
@@ -969,11 +1181,14 @@ public class QuoteService {
 		var body = map(quote.get("body"));
 		if (blank(body.get("ai_review_status"))) throw new RuleException("只有AI生成的草稿可以导回已校验清单");
 		String clean = cleanFilename(filename);
+		String[] usedBaseline = { "" };
 		var parsed = aiReviewImporter.read(bytes, clean, id, expectedRevision, body, map(quote.get("result")), downloadId -> {
 			var download = repo.find("quote_import", downloadId, false);
 			if (download == null || !actor.manager() && Long.parseLong(str(download.get("owner_id"))) != actor.id()) return null;
+			usedBaseline[0] = downloadId;
 			return map(download.get("parsed"));
 		});
+		parsed.put("download_id", usedBaseline[0]);
 		String importId = uuid();
 		parsed.putAll(obj("filename", clean, "content_base64", Base64.getEncoder().encodeToString(bytes)));
 		repo.update("INSERT INTO quote_import(id,owner_id,filename,parsed,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
@@ -983,6 +1198,9 @@ public class QuoteService {
 		var response = obj("import_id", importId, "filename", clean);
 		for (String key : List.of("parser_version", "line_count", "product_row_count", "special_row_count", "change_count",
 				"changed_row_count", "unchanged_count", "changes", "review_rows")) response.put(key, parsed.get(key));
+		var candidate = new LinkedHashMap<>(body);
+		for (String key : List.of("rows", "source_special_rows", "duct_options")) candidate.put(key, parsed.get(key));
+		response.put("ai_review_preview", aiReviewReport(candidate, expectedRevision));
 		return response;
 	}
 
@@ -1010,6 +1228,7 @@ public class QuoteService {
 		var body = new LinkedHashMap<>(old);
 		for (String key : List.of("rows", "source_special_rows", "duct_options")) body.put(key, parsed.get(key));
 		body.putAll(obj("ai_review_status", "pending", "ai_input_review_import", obj("import_id", importId,
+				"download_id", parsed.get("download_id"),
 				"filename", imported.get("filename"), "imported_by", actor.id(), "imported_at", OffsetDateTime.now().toString(),
 				"change_count", parsed.get("change_count"))));
 		body.remove("ai_reviewed_by");
@@ -1020,8 +1239,9 @@ public class QuoteService {
 				"changes", parsed.get("changes")));
 		if (yes(data.get("recalculate"))) {
 			int updatedRevision = n(quote.get("revision")).intValue() + 1;
-			action(actor, id, "approve-ai", obj("revision", updatedRevision, "review_confirmed", true));
-			var calculated = calculate(actor, id, obj("revision", updatedRevision + 1));
+			boolean previewAi = yes(data.get("preview_ai"));
+			if (!previewAi) action(actor, id, "approve-ai", obj("revision", updatedRevision, "review_confirmed", true));
+			var calculated = calculate(actor, id, obj("revision", updatedRevision + (previewAi ? 0 : 1), "preview_ai", previewAi));
 			storeExcelParameterReport(id, s(imported, "filename"), list(parsed.get("changes")));
 			return calculated;
 		}
@@ -1096,12 +1316,16 @@ public class QuoteService {
 	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> create(Actor actor, Map<String, Object> data) {
+		try (var parsing = QuoteParsingScope.open()) { return createParsed(actor, data); }
+	}
+
+	private Map<String, Object> createParsed(Actor actor, Map<String, Object> data) {
 		Map<String, Object> body = metadata(data), options = ductDefaults();
 		if (blank(body.get("quote_date")))
 			body.put("quote_date", LocalDate.now().toString());
 		String mode = str(data.getOrDefault("pricing_mode", "duct_v1"));
 		boolean wholeWorkbook = !blank(data.get("import_id"))
-				&& (data.containsKey("sheet_settings") || (mode.equals("auto_v1") && blank(data.get("sheet"))));
+				&& (data.containsKey("sheet_settings") || (mode.equals("auto_v1") && Objects.toString(data.get("sheet"), "").isEmpty()));
 		// 整份客户清单可能同时包含风管与设备，按每行识别，不能沿用单类整单模式。
 		if (wholeWorkbook)
 			mode = "auto_v1";
@@ -1136,10 +1360,13 @@ public class QuoteService {
 									.toList()));
 			}
 			else {
+				String requestedSheet = Objects.toString(data.get("sheet"), "");
 				Map<String, Object> sheet = sheets.stream()
-					.filter(s -> s(s, "name").equals(s(data, "sheet")))
+					.filter(s -> Objects.toString(s.get("name"), "").equals(requestedSheet))
 					.findFirst()
 					.orElseThrow(() -> new RuleException("请选择工作表"));
+				if (data.containsKey("sheet_index") && n(data.get("sheet_index")).compareTo(n(sheet.get("sheet_index"))) != 0)
+					throw new RuleException("工作表名称与序号不一致，请重新选择工作表");
 				built = importer.build(sheet, data.get("start_row"), map(data.get("mapping")), mode);
 				body.putAll(obj("source_sheet", data.get("sheet"), "import_mapping", data.get("mapping"), "start_row",
 						data.get("start_row")));
@@ -1207,25 +1434,11 @@ public class QuoteService {
 
 	/** 分页和兼容列表共用摘要转换，保持总价有效性、版本及导出次数的原有口径。 */
 	private List<Map<String, Object>> quoteSummaries(List<Map<String, Object>> values) {
+		if (values.isEmpty()) return List.of();
 		List<Map<String, Object>> result = new ArrayList<>();
-		var resources = repo.catalogs();
+		var resources = repo.catalogHeads();
 		var activeRuleIds = QuoteListSummary.activeRuleIds(resources);
 		var summaries = values.stream().map(repo::decode).toList();
-		var changedRuleIds = summaries.stream().filter(q -> s(q, "state").equals("draft"))
-			.filter(q -> QuoteListSummary.rulesChanged(map(q.get("result")), activeRuleIds))
-			.filter(q -> !(map(q.get("result")).get("product_rule_catalog_ids") instanceof List<?> ids
-					&& ids.contains("legacy-unverified")))
-			.map(q -> s(q, "id")).toList();
-		Map<String, Boolean> actualRuleChanges = new HashMap<>();
-		// 规则目录变化时才批量读取当前页的正文，按详情页相同的绑定规则排除无关发布造成的误报。
-		for (int offset = 0; offset < changedRuleIds.size(); offset += 100) {
-			var ids = changedRuleIds.subList(offset, Math.min(offset + 100, changedRuleIds.size()));
-			String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
-			for (var value : repo.query("SELECT id,body,result FROM quote_order WHERE id IN (" + placeholders + ")", ids.toArray())) {
-				var full = repo.decode(value);
-				actualRuleChanges.put(s(full, "id"), productRulesChanged(map(full.get("body")), map(full.get("result")), resources));
-			}
-		}
 		for (Map<String, Object> q : summaries) {
 			Map<String, Object> body = map(q.remove("body")), calculation = map(q.remove("result"));
 			// pig会将Long序列化为字符串，这里把导出次数转成整数，确保页面的0值和计数判断正确。
@@ -1235,10 +1448,11 @@ public class QuoteService {
 			q.put("pricing_mode", body.get("pricing_mode"));
 			q.put("recognition_mode", body.get("recognition_mode"));
 			boolean rulesChanged = QuoteListSummary.rulesChanged(calculation, activeRuleIds);
-			if (rulesChanged && actualRuleChanges.containsKey(s(q, "id"))) rulesChanged = actualRuleChanges.get(s(q, "id"));
-			boolean stale = s(q, "state").equals("draft") && (stale(body, calculation)
-					|| freightIncluded(body) == null || rulesChanged || catalogsChanged(calculation, resources));
-			q.putAll(obj("result_stale", stale, "total", stale ? null : calculation.get("total"), "pending_count",
+			Boolean reviewed = rulesChanged ? QuoteListSummary.reviewedChange(calculation, q.get("revision"), activeRuleIds) : Boolean.FALSE;
+			boolean knownStale = s(q, "state").equals("draft") && (stale(body, calculation) || freightIncluded(body) == null || catalogsChanged(calculation, resources));
+			boolean reviewRequired = s(q, "state").equals("draft") && !knownStale && reviewed == null;
+			boolean stale = s(q, "state").equals("draft") && (knownStale || reviewed == null || reviewed);
+			q.putAll(obj("result_stale", stale, "result_review_required", reviewRequired, "total", stale ? null : calculation.get("total"), "pending_count",
 					stale ? null : calculation.get("pending_count")));
 			result.add(q);
 		}
@@ -1249,12 +1463,64 @@ public class QuoteService {
 	 * 读取报价与历史导出列表；草稿试算失效时隐藏结果，避免按旧价格继续操作。
 	 */
 	public Map<String, Object> detail(Actor actor, String id) {
+		try (var parsing = QuoteParsingScope.open()) { return detailParsed(actor, id); }
+	}
+
+	private Map<String, Object> detailParsed(Actor actor, String id) {
+		return readDetail(actor, id, true);
+	}
+
+	/** 新读取入口只返回投影，不回写规则复核摘要或其他业务记录。 */
+	public Map<String,Object> workbenchDetail(Actor actor, String id) {
+		try(var parsing=QuoteParsingScope.open()) { return QuoteWorkbenchView.quote(readDetail(actor,id,false)); }
+	}
+
+	/** 编辑输入完整保留；客户重原文独立按行加载。 */
+	public Map<String,Object> compactWorkbenchDetail(Actor actor, String id) {
+		try(var parsing=QuoteParsingScope.open()) { return QuoteInputProjection.compact(readDetail(actor,id,false)); }
+	}
+
+	public Map<String,Object> rowInput(Actor actor, String id, String rowId, int expectedRevision) {
+		try(var parsing=QuoteParsingScope.open()) {
+			var q=checkedQuote(repo.findOrderInput(id),actor,false);
+			revision(q,obj("revision",expectedRevision));
+			var rows=list(map(q.get("body")).get("rows")).stream().filter(row -> !s(row,"row_id").isEmpty() && s(row,"row_id").equals(rowId)).toList();
+			if(rows.size()>1) conflict("明细标识重复，请核对原始清单后重试");
+			if(rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"明细不存在或无权访问");
+			prepareBodyForDisplay(obj("rows",rows,"ai_review_status",map(q.get("body")).get("ai_review_status")));
+			return obj("quote_id",id,"revision",q.get("revision"),"row_id",rowId,"row",rows.get(0));
+		}
+	}
+
+	public Map<String,Object> rowCalculation(Actor actor, String id, String rowId, int expectedRevision) {
+		try(var parsing=QuoteParsingScope.open()) {
+			var q=readDetail(actor,id,false);
+			revision(q,obj("revision",expectedRevision));
+			var rows=list(map(q.get("body")).get("rows"));
+			int index=-1;
+			for(int i=0;i<rows.size();i++) if(!s(rows.get(i),"row_id").isEmpty() && s(rows.get(i),"row_id").equals(rowId)) {
+				if(index>=0) conflict("明细标识重复，请核对原始清单后重试");
+				index=i;
+			}
+			if(index<0) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"明细不存在或无权访问");
+			var calculated=list(map(q.get("result")).get("rows"));
+			return obj("quote_id",id,"revision",q.get("revision"),"row_id",rowId,"result_stale",q.get("result_stale"),
+				"result",yes(q.get("result_stale")) || index>=calculated.size() ? null : calculated.get(index));
+		}
+	}
+
+	private Map<String, Object> readDetail(Actor actor, String id, boolean cacheReview) {
 		Map<String, Object> q = quote(id, actor, false, false), calculation = map(q.get("result"));
 		var body = map(q.get("body"));
 		boolean stale = s(q, "state").equals("draft") && (stale(body, calculation) || freightUnconfirmed(q));
 		if (s(q, "state").equals("draft") && !stale) {
 			var resources = repo.catalogs();
-			stale = productRulesChanged(body, calculation, resources) || catalogsChanged(calculation, resources);
+			var validation=new ValidationContext(body,calculation,resources);
+			boolean changed = validation.rulesChanged();
+			stale = validation.pricesChanged() || changed || catalogsChanged(calculation, resources);
+			var activeIds = QuoteListSummary.activeRuleIds(resources);
+			if (cacheReview && QuoteListSummary.rulesChanged(calculation, activeIds))
+				repo.cacheRuleReview(id, q.get("revision"), calculation, activeIds, changed);
 		}
 		prepareBodyForDisplay(body);
 		q.put("result_stale", stale);
@@ -1289,8 +1555,11 @@ public class QuoteService {
 		revision(quote, data);
 		var body = map(quote.get("body")); var result = map(quote.get("result"));
 		if (!blank(data.get("report_id"))) failedAiReport(body, data, quote.get("revision"));
-		if (result.isEmpty() || stale(body, result) || freightUnconfirmed(quote)
-				|| productRulesChanged(body, result, repo.catalogs()) || catalogsChanged(result, repo.catalogs()))
+		if (result.isEmpty() || stale(body, result) || freightUnconfirmed(quote))
+			throw new RuleException("请先保存并完成当前版本的试算，再选择AI辅助识别");
+		var resources = repo.catalogs();
+		var validation=new ValidationContext(body,result,resources);
+		if (validation.pricesChanged() || validation.rulesChanged() || catalogsChanged(result, resources))
 			throw new RuleException("请先保存并完成当前版本的试算，再选择AI辅助识别");
 		if (!(data.get("row_ids") instanceof List<?> ids) || ids.isEmpty() || ids.size() > 20)
 			throw new RuleException("请选择1到20条报价失败的识别项目");
@@ -1299,9 +1568,22 @@ public class QuoteService {
 		var rows = list(body.get("rows")); var calculated = list(result.get("rows"));
 		var targets = new ArrayList<Map<String, Object>>();
 		for (int i = 0; i < rows.size(); i++) if (selected.contains(s(rows.get(i), "row_id"))) {
-			if (i >= calculated.size() || !yes(FailedQuoteAssist.inspect(rows.get(i), calculated.get(i)).get("eligible")))
+			var eligibility = i < calculated.size() ? FailedQuoteAssist.inspect(rows.get(i), calculated.get(i)) : obj();
+			if (!yes(eligibility.get("eligible")))
 				throw new RuleException("所选项目已完成、已人工确认，或需要补参数/价格，不能使用AI重新识别");
+			if (yes(eligibility.get("requires_features")) && !yes(data.get("include_features")))
+				throw new RuleException("所选行的厚度仅在项目特征中，请勾选“本次参考项目特征描述”后再识别");
 			var target = new LinkedHashMap<>(rows.get(i));
+			var failureContext = FailedQuoteAssist.context(calculated.get(i));
+			target.put("_failure_context", failureContext);
+			var previousReport=map(body.get("ai_retry_report"));
+			if (s(previousReport,"quote_revision").equals(str(quote.get("revision")))) for (var entry : list(previousReport.get("entries"))) {
+				if (!s(entry,"row_id").equals(s(target,"row_id")) || !Set.of("no_suggestion","applied").contains(s(entry,"status"))) continue;
+				var baseline=map(entry.get(s(entry,"status").equals("applied") ? "after" : "before"));
+				if (FailedQuoteAssist.snapshot(target).equals(baseline) && s(entry,"initial_reason").equals(s(calculated.get(i),"reason"))
+						&& yes(map(entry.get("suggestion")).get("used_features"))==yes(data.get("include_features")))
+					throw new RuleException("相同资料及报错已识别过且未解决，请先补充原资料或人工核对，再重新识别");
+			}
 			var detail = map(calculated.get(i).get("detail"));
 			if (yes(map(map(detail.get("product_rule")).get("body")).get("automatic_composition")))
 				target.put("_composition_result", calculated.get(i));
@@ -1362,6 +1644,7 @@ public class QuoteService {
 	public Map<String, Object> applyFailedAi(Actor actor, String id, Map<String, Object> data) {
 		var q = quote(id, actor, true, true); revision(q, data);
 		var body = map(q.get("body"));
+		boolean previouslyApprovedAi = s(body,"ai_review_status").equals("approved");
 		var report = failedAiReport(body, data, q.get("revision"));
 		var entries = list(report.get("entries")); boolean undo = yes(data.get("undo"));
 		Set<String> selected = new LinkedHashSet<>();
@@ -1395,6 +1678,11 @@ public class QuoteService {
 		try { saved = save(actor, id, body); }
 		catch (RuleException ex) { throw new RuleException("批量保存未完成，本批修改未保存：" + ex.getMessage()); }
 		Map<String, Object> response;
+		// 已核验草稿只允许在报价人员明确确认本次建议后继续计算，初次待核验草稿仍不能跳过审批。
+		if (previouslyApprovedAi && yes(data.get("review_confirmed"))) {
+			action(actor,id,"approve-ai",obj("revision",saved.get("revision"),"review_confirmed",true));
+			saved=quote(id,actor,true,false);
+		}
 		try { response = calculate(actor, id, obj("revision", saved.get("revision"), "replace_manual_review", yes(data.get("replace_manual_review")))); }
 		catch (RuleException ex) { throw new RuleException("统一试算未完成，本批修改未保存：" + ex.getMessage()); }
 		var updatedBody = map(response.get("body")); var updatedRows = list(updatedBody.get("rows"));
@@ -1428,14 +1716,32 @@ public class QuoteService {
 		}
 	}
 
+	/** 最后一个短临界区重新读取依赖，不能把长计算开始前的目录当作当前目录。 */
+	private ValidationContext currentValidation(Map<String, Object> body, Map<String, Object> result) {
+		repo.catalogLock();
+		return new ValidationContext(body, result, repo.catalogs());
+	}
+
+	private boolean invalidResult(Map<String, Object> body, Map<String, Object> result, ValidationContext validation) {
+		return stale(body, result) || validation.pricesChanged() || validation.rulesChanged()
+				|| catalogsChanged(result, validation.resources);
+	}
+
 	/** 返回本次事务已经保存的状态，客户端无需再读取整份报价。 */
-	private static Map<String, Object> mutationResponse(Map<String, Object> quote, Map<String, Object> body,
+	private Map<String, Object> mutationResponse(Map<String, Object> quote, Map<String, Object> body,
 			Map<String, Object> result) {
+		boolean dependencyStale = result != null && s(quote, "state").equals("draft")
+				&& invalidResult(body, result, currentValidation(body, result));
+		return mutationResponse(quote, body, result, dependencyStale);
+	}
+
+	private static Map<String, Object> mutationResponse(Map<String, Object> quote, Map<String, Object> body,
+			Map<String, Object> result, boolean dependencyStale) {
 		prepareBodyForDisplay(body);
-		if (result != null) FailedQuoteAssist.annotate(body, result);
+		if (result != null && !dependencyStale) FailedQuoteAssist.annotate(body, result);
 		return obj("revision", n(quote.get("revision")).intValue() + 1, "state", quote.get("state"), "body", body,
-				"result", result, "result_stale", s(quote, "state").equals("draft")
-						&& (freightIncluded(body) == null || result != null && stale(body, result)));
+				"result", dependencyStale ? null : result, "result_stale", s(quote, "state").equals("draft")
+						&& (dependencyStale || freightIncluded(body) == null || result != null && stale(body, result)));
 	}
 
 	/**
@@ -1461,7 +1767,30 @@ public class QuoteService {
 	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> save(Actor actor, String id, Map<String, Object> data) {
+		if (QuoteInputProjection.VIEW.equals(s(data,"_input_view")) || list(data.get("rows")).stream().anyMatch(row -> yes(row.get("input_deferred"))))
+			throw new RuleException("未完整加载的清单请使用局部保存，不能覆盖完整报价");
+		try (var parsing = QuoteParsingScope.open()) { return responseView(data,saveParsed(actor, id, data)); }
+	}
+
+	/** 在同一行锁和修订校验下合并，继续使用完整保存的规范化、失效与审计逻辑。 */
+	@Transactional(transactionManager = "quotationTransactionManager")
+	public Map<String, Object> patch(Actor actor, String id, Map<String, Object> data) {
+		try (var parsing = QuoteParsingScope.open()) {
+			var q = quote(id,actor,true,true);
+			revision(q,data);
+			var merged = QuotePatch.merge(map(q.get("body")),data);
+			// 旧确认只用于保留当前地区；更换地区后必须由本次请求明确确认人工价格。
+			if (!map(data.get("metadata")).containsKey("region_prices_confirmed")) merged.remove("region_prices_confirmed");
+			return responseView(data,saveParsed(actor,id,merged,q));
+		}
+	}
+
+	private Map<String, Object> saveParsed(Actor actor, String id, Map<String, Object> data) {
 		Map<String, Object> q = quote(id, actor, true, true);
+		return saveParsed(actor,id,data,q);
+	}
+
+	private Map<String, Object> saveParsed(Actor actor, String id, Map<String, Object> data, Map<String, Object> q) {
 		revision(q, data);
 		Map<String, Object> old = map(q.get("body")), body = new LinkedHashMap<>(old);
 		body.putAll(metadata(data));
@@ -1534,9 +1863,20 @@ public class QuoteService {
 			for (String key : List.of("row_id", "source_row", "source_sheet", "source_sheet_index", "original", "source_issue",
 					"source_file", "source_locator", "source_excerpt", "source_issue_reason"))
 				cleaned.put(key, original.get(key));
+			// source_text和旧标准单的平铺参数仍是引擎输入。抬头保存不能将这些服务器已有输入静默删掉。
+			var legacyFields = new LinkedHashSet<String>(EquipmentReview.HEADERS.keySet());
+			legacyFields.addAll(EquipmentReview.FAN_HEADERS.keySet());
+			legacyFields.addAll(List.of("source_text", "source_total_area", "equipment_quantity", "installation_description",
+					"main_product_name", "control_description", "attached_components_description", "equipment_kind_source", "recognition_issue"));
+			for (String key : legacyFields) if (original.containsKey(key)) cleaned.put(key, original.get(key));
 			for (String key : List.of("name", "spec", "quantity", "engineering_quantity", "unit", "remark", "category",
 					"exclude_reason", "candidate_id"))
 				cleaned.put(key, textValue(row.get(key), 1000));
+			String oldProduct = EquipmentPricingEngine.classifySource(original), newProduct = EquipmentPricingEngine.classifySource(cleaned);
+			if (!oldProduct.isEmpty() && !newProduct.isEmpty() && !oldProduct.equals(newProduct)) {
+				// 更换主产品后不能带入上一产品的原文控制要求；同类改名及抬头编辑保留有效原文。
+				for (String key : List.of("source_text", "main_product_name", "control_description", "attached_components_description")) cleaned.remove(key);
+			}
 			for (String key : List.of("excluded", "installation_only", "source_issue_confirmed")) {
 				if (row.containsKey(key) && !bool(row.get(key)))
 					throw new RuleException("行确认状态不正确");
@@ -1571,6 +1911,11 @@ public class QuoteService {
 			else if (s(oldAttributes, "equipment_kind_source").equals("manual") && !blank(safeAttrs.get("equipment_kind")))
 				safeAttrs.put("equipment_kind_source", "manual");
 			cleaned.put("attributes", safeAttrs);
+			QuoteInputChanges.saved(original, cleaned, QuoteInputChanges.explicitFields(original, cleaned));
+			// 文本规范化会重建source_text；同一产品的等价改名/联系备注不能因此丢掉原有有效补充参数。
+			if (!blank(original.get("source_text")) && !s(original, "source_text").equals(s(cleaned, "source_text"))
+					&& AiQuoteReviewImportService.inferred(original).equals(AiQuoteReviewImportService.inferred(cleaned)))
+				cleaned.put("source_text", original.get("source_text"));
 			AcousticLengthInputs.saved(original, cleaned);
 			RoundDimensions.invalidatePreviousChoice(original, cleaned);
 			DuctImportService.refreshAutomaticClassification(cleaned);
@@ -1603,9 +1948,12 @@ public class QuoteService {
 				DuctImportService.autoClassifyRow(cleaned);
 			var preparedRow = rulePreparation.prepare(cleaned);
 			preparedRules.add(preparedRow);
-			if (preparedRow.containsKey("_product_rule_resource"))
+			if (preparedRow.containsKey("_product_rule_resource")) {
 				cleaned.put("category", preparedRow.get("category"));
+				EngineeringImportReview.refresh(cleaned);
+			}
 			AiConfidencePolicy.manualEdits(original, cleaned);
+			AiStructuredInput.refresh(cleaned);
 			safe.add(cleaned);
 		}
 		body.put("rows", safe);
@@ -1633,40 +1981,25 @@ public class QuoteService {
 		}
 		// 客户、联系人、整单备注等展示信息不改变人工价格；计价输入变化仍使旧试算失效。
 		Map<String, Object> retainedResult = samePrices && !previousResult.isEmpty() ? previousResult : null;
+		if (retainedResult != null) {
+			if (invalidResult(body, retainedResult, currentValidation(body, retainedResult))) retainedResult = null;
+		}
 		String serializedBody = repo.json(body);
 		if (serializedBody.length() > 16 * 1024 * 1024)
 			throw new RuleException("报价内容过长，请拆分");
-		repo.updateOrder(id, obj("body", body, "result", retainedResult), true, true);
-		repo.audit(actor, "edit_quote", id, obj("previous_body", old));
-		return mutationResponse(q, body, retainedResult);
+		repo.updateOrder(id, obj("body", body, "result", retainedResult), true, true, serializedBody);
+		repo.audit(actor, "edit_quote", id, obj("previous_body", old), body);
+		return mutationResponse(q, body, retainedResult, false);
 	}
 
 	/** 只排除不参与计价的抬头信息；产品名称和行备注仍可能包含计价要求。 */
 	private static boolean samePricingInputs(Map<String, Object> before, Map<String, Object> after) {
-		for (String key : List.of("pricing_mode", "recognition_mode", "duct_options", "equipment_options",
-				"installation_options", "installation_items", "project_region", "project_region_confirmed",
-				"different_delivery_region", "delivery_region", "region_prices_confirmed", "include_freight"))
-			if (!Objects.equals(before.get(key), after.get(key))) return false;
-		var oldRows = list(before.get("rows"));
-		var newRows = list(after.get("rows"));
-		if (oldRows.size() != newRows.size()) return false;
-		for (int i = 0; i < oldRows.size(); i++) {
-			var oldRow = oldRows.get(i);
-			var newRow = newRows.get(i);
-			if (sourceInputChanged(oldRow, newRow)) return false;
-			for (String key : List.of("row_id", "candidate_id", "product_rule_family"))
-				if (!s(oldRow, key).equals(s(newRow, key))) return false;
-			for (String key : List.of("excluded", "installation_only", "source_issue_confirmed", "source_issue"))
-				if (yes(oldRow.get(key)) != yes(newRow.get(key))) return false;
-			for (String key : List.of("product_rule", "installation"))
-				if (!map(oldRow.get(key)).equals(map(newRow.get(key)))) return false;
-		}
-		return true;
+		return QuoteCalculationInputs.fingerprint(before).equals(QuoteCalculationInputs.fingerprint(after));
 	}
 
 	/** 参数再次变化时，旧的来源异常确认不能沿用。 */
 	static boolean sourceInputChanged(Map<String, Object> before, Map<String, Object> after) {
-		for (String key : List.of("name", "spec", "quantity", "engineering_quantity", "unit", "remark", "category"))
+		for (String key : List.of("name", "spec", "quantity", "engineering_quantity", "unit", "remark", "category", "source_text", "control_description"))
 			if (!s(before, key).equals(s(after, key))) return true;
 		var oldAttrs = new LinkedHashMap<>(map(before.get("attributes")));
 		var newAttrs = new LinkedHashMap<>(map(after.get("attributes")));
@@ -1682,6 +2015,18 @@ public class QuoteService {
 	 */
 	@Transactional(transactionManager = "quotationTransactionManager")
 	public Map<String, Object> calculate(Actor actor, String id, Map<String, Object> data) {
+		try (var parsing = QuoteParsingScope.open()) { return responseView(data,calculateParsed(actor, id, data)); }
+	}
+
+	private static Map<String,Object> responseView(Map<String,Object> request, Map<String,Object> response) {
+		return switch(s(request,"response_view")) {
+			case "workbench" -> QuoteWorkbenchView.quote(response);
+			case "workbench_compact" -> QuoteInputProjection.compact(response);
+			default -> response;
+		};
+	}
+
+	private Map<String, Object> calculateParsed(Actor actor, String id, Map<String, Object> data) {
 		Map<String, Object> q = quote(id, actor, true, true);
 		revision(q, data);
 		var body = map(q.get("body"));
@@ -1694,15 +2039,109 @@ public class QuoteService {
 			snapshot = obj("review", manual, "lines", previousResult.get("manual_lines"), "total", previousResult.get("total"));
 			body.put("manual_review_snapshot", snapshot);
 		}
-		if (!blank(body.get("ai_review_status")) && !s(body, "ai_review_status").equals("approved"))
+		boolean pendingAi = !blank(body.get("ai_review_status")) && !s(body, "ai_review_status").equals("approved");
+		boolean previewAi = yes(data.get("preview_ai")) && pendingAi;
+		if (pendingAi && !previewAi)
 			throw new RuleException("请先人工核对并确认AI生成的清单，再试算报价");
 		Map<String, Object> result = compute(body, repo.catalogs(), map(settings(actor).get("policy")));
+		if (previewAi) {
+			List<Object> issues = new ArrayList<>((List<?>) result.get("issues"));
+			issues.add("AI清单预试算尚不能正式报价，请完成清单核验后重新试算");
+			result.putAll(obj("preview_ai", true, "ai_review_status", body.get("ai_review_status"), "formal_ready", false, "issues", issues));
+		}
 		if (!snapshot.isEmpty()) snapshot.put("requires_confirmation", false);
 		result.put("calculated_at", OffsetDateTime.now().toString());
 		result.put("template_sha256", DuctExportService.templateHash());
 		repo.updateOrder(id, obj("body", body, "result", result), true, true);
 		repo.audit(actor, "calculate_quote", id, obj("pending_count", result.get("pending_count")));
 		return mutationResponse(q, body, result);
+	}
+
+	/** 汇总当前修订所有核验问题；只读预览不改变审批状态，也不把来源一致视为可计价。 */
+	public Map<String, Object> aiReviewPreview(Actor actor, String id, Map<String, Object> data) {
+		var q = quote(id, actor, false, false);
+		revision(q, data);
+		var body = repo.object(repo.json(q.get("body")));
+		if (blank(body.get("ai_review_status"))) throw new RuleException("只有AI清单可以预览核验问题");
+		return aiReviewReport(body, q.get("revision"));
+	}
+
+	private static Map<String, Object> aiReviewReport(Map<String, Object> body, Object revision) {
+		var issues = aiReviewIssues(body);
+		long blocking = issues.stream().filter(issue -> yes(issue.get("blocking"))).count();
+		return obj("revision", revision, "ai_review_status", body.get("ai_review_status"),
+				"can_approve", blocking == 0, "blocking_count", blocking, "issue_count", issues.size(),
+				"source_pending_count", issues.stream().filter(issue -> s(issue, "field").equals("source"))
+						.map(issue -> s(issue, "row_id")).distinct().count(),
+				"row_issue_count", issues.stream().map(issue -> str(issue.get("row_index")) + ":" + str(issue.get("standard_row"))).distinct().count(), "issues", issues);
+	}
+
+	private static List<Map<String, Object>> aiReviewIssues(Map<String, Object> body) {
+		List<Map<String, Object>> issues = new ArrayList<>();
+		var rows = list(body.get("rows"));
+		for (int index = 0; index < rows.size(); index++) {
+			var row = rows.get(index);
+			if (yes(row.get("excluded"))) continue;
+			AiInputReview.refresh(row, false);
+			var numbers = AiInputReview.numberIssues(row);
+			for (var invalid : numbers) addAiReviewIssue(issues, row, index, s(invalid, "field"), s(invalid, "message"), true);
+			for (String field : AiInputReview.clearedFields(map(row.get("attributes"))))
+				addAiReviewIssue(issues, row, index, field, "参数已人工清空，请补齐后再确认AI草稿", true);
+			if (s(row, "name").isBlank() || s(row, "name").equals("待识别材料"))
+				addAiReviewIssue(issues, row, index, "name", "产品名称待识别，请对照原表补充或明确排除", false);
+			if (s(row, "unit").isBlank()) addAiReviewIssue(issues, row, index, "unit", "原始资料单位缺失", false);
+			if (AiInputReview.quantityFields(row).stream().allMatch(field -> s(row, field).isBlank()))
+				addAiReviewIssue(issues, row, index, "quantity", "实际计价数量或工程量缺失", false);
+			for (String reason : (yes(row.get("source_issue_confirmed")) ? "" : s(row, "source_issue_reason")).split("；")) {
+				if (reason.isBlank() || reason.startsWith(AiInputReview.PREFIX) && (reason.contains("必须为支持范围内的正数") || reason.contains("已人工清空"))) continue;
+				addAiReviewIssue(issues, row, index, "source", reason, false);
+			}
+			String confidence = AiConfidencePolicy.reason(row);
+			if (!confidence.isBlank()) addAiReviewIssue(issues, row, index, "ai_confidence", confidence, false);
+		}
+		var specialRows = list(body.get("source_special_rows"));
+		for (var special : specialRows) {
+			String kind = s(special, "kind");
+			if (!Set.of("corner_count", "clip_meters", "flange_30_meters", "flange_40_meters").contains(kind)) continue;
+			boolean repeated = specialRows.stream().filter(item -> s(item, "kind").equals(kind)).count() > 1;
+			Object quantity = repeated ? special.get("quantity") : map(body.get("duct_options")).get(kind);
+			if (!AiInputReview.validNumber(str(quantity)))
+				addAiReviewIssue(issues, special, -1, "quantity", "辅材数量/米数" + (blank(quantity) ? "待核实，请补齐" : "必须为支持范围内的正数，请修正“" + str(quantity) + "”"), true);
+			else if (!AiInputReview.validNumber(s(map(body.get("duct_options")), kind)))
+				addAiReviewIssue(issues, special, -1, "quantity", "辅材汇总数量/米数必须为支持范围内的正数", true);
+		}
+		return issues;
+	}
+
+	private static void addAiReviewIssue(List<Map<String, Object>> issues, Map<String, Object> row, int index,
+			String field, String message, boolean blocking) {
+		var original = map(row.get("original"));
+		issues.add(obj("row_id", row.get("row_id"), "row_index", index, "standard_row", row.get("source_row"),
+				"source_file", original.getOrDefault("source_file", row.get("source_file")),
+				"source_sheet", original.getOrDefault("source_sheet", row.get("source_sheet")),
+				"source_row", original.getOrDefault("source_row", row.get("source_row")),
+				"name", row.get("name"), "field", field, "message", message, "blocking", blocking,
+				"source_confirmable", field.equals("source") && sourceConfirmable(row),
+				"source_excerpt", original.getOrDefault("source_excerpt", row.getOrDefault("source_excerpt", original.getOrDefault("source_text", "")))));
+	}
+
+	/** 批量确认只接受已有完整计价量的来源行；数值异常和未选择的直径冲突不能靠确认跳过。 */
+	private static boolean sourceConfirmable(Map<String, Object> row) {
+		return yes(row.get("source_issue")) && !yes(row.get("source_issue_confirmed")) && !yes(row.get("excluded"))
+				&& !s(row, "row_id").isBlank() && !s(row, "name").isBlank() && !s(row, "name").equals("待识别材料")
+				&& !s(row, "unit").isBlank() && AiInputReview.numberIssues(row).isEmpty()
+				&& AiInputReview.quantityFields(row).stream().anyMatch(field -> !s(row, field).isBlank())
+				&& !RoundDimensions.conflict(row)
+				&& AiInputReview.sourceDimensionsAgree(row)
+				&& AiInputReview.geometryIssue(AiInputReview.mainText(s(row, "name"))).isBlank()
+				&& AiInputReview.geometryIssue(AiInputReview.mainText(s(row, "spec"))).isBlank();
+	}
+
+	/** 普通价格/参数回导不能代替AI清单核验；应用时也检查当前状态，拒绝重放旧预览令牌。 */
+	private static void requireReviewedAiForOrdinaryImport(Map<String, Object> quote) {
+		String status = s(map(quote.get("body")), "ai_review_status");
+		if (!status.isBlank() && !status.equals("approved") || yes(map(quote.get("result")).get("preview_ai")))
+			throw new RuleException("当前AI清单尚未完成核验及正式试算，请使用AI待核验清单回导；完成核验并重新试算后再使用普通校对版");
 	}
 
 	/**
@@ -1714,6 +2153,7 @@ public class QuoteService {
 			int expectedRevision) {
 		Map<String, Object> q = quote(id, actor, true, true);
 		revision(q, obj("revision", expectedRevision));
+		requireReviewedAiForOrdinaryImport(q);
 		Map<String, Object> result = map(q.get("result"));
 		if (result.isEmpty())
 			throw new RuleException("当前报价尚未试算，不能回导校对版");
@@ -1724,19 +2164,39 @@ public class QuoteService {
 		for (var row : list(map(q.get("body")).get("rows")))
 			scopes.put(s(row, "row_id"), quotationScope(row));
 		Map<String, Object> parsed = reviewImporter.read(bytes, clean, id, expectedRevision, scopes);
-		boolean priceEdited = list(parsed.get("changes")).stream().anyMatch(change -> s(change, "kind").equals("manual")
-				&& Set.of("material_unit", "material_amount", "installation_amount", "line_total").contains(s(change, "field")));
-		boolean pendingInputEdited = yes(parsed.get("parameter_input_format")) && !priceEdited
-				&& list(parsed.get("lines")).stream().anyMatch(line -> yes(line.get("was_pending"))
-						&& list(line.get("changes")).stream().anyMatch(change -> s(change, "kind").equals("manual")
-								&& Set.of("name", "spec", "thickness", "process", "unit", "quantity").contains(s(change, "field"))));
-		if (pendingInputEdited || list(parsed.get("lines")).stream().anyMatch(line -> !map(line.get("parameter_updates")).isEmpty())) {
+		var resources = repo.catalogs();
+		bindReviewInstallationInputs(map(q.get("body")), result, parsed);
+		boolean inputEdited = list(parsed.get("lines")).stream().anyMatch(line -> {
+			var changes = list(line.get("changes"));
+			boolean priceEdited = changes.stream().anyMatch(change -> s(change, "kind").equals("manual")
+					&& Set.of("material_unit", "material_amount", "installation_amount", "line_total").contains(s(change, "field")));
+			return changes.stream().anyMatch(change -> s(change, "kind").equals("manual")
+					&& (Set.of("name", "spec", "thickness", "process", "unit").contains(s(change, "field"))
+							|| !priceEdited && s(change, "field").equals("quantity")));
+		});
+		boolean remarksEdited = list(parsed.get("changes")).stream().anyMatch(change -> s(change, "kind").equals("manual") && s(change, "field").equals("remark"));
+		boolean pricesEdited = list(parsed.get("lines")).stream().anyMatch(line -> yes(line.get("price_changed")));
+		if (remarksEdited && !map(result.get("manual_review_import")).isEmpty() && !pricesEdited) {
+			var original = repo.object(repo.json(map(q.get("body"))));
+			var changed = repo.object(repo.json(original)); applyReviewRemarks(changed, parsed);
+			var policy = map(settings(actor).get("policy"));
+			if (!pricingEffect(original, compute(original, resources, policy)).equals(pricingEffect(changed, compute(changed, resources, policy))))
+				throw new RuleException("备注已改变计价要求，当前报价含Excel人工价格，请先在工作台确认替换人工价格并重新试算，再导出参数校对版");
+		}
+		if (inputEdited || list(parsed.get("lines")).stream().anyMatch(line -> !map(line.get("parameter_updates")).isEmpty())
+				|| remarksEdited && !pricesEdited && map(result.get("manual_review_import")).isEmpty()) {
 			if (!map(result.get("manual_review_import")).isEmpty()) throw new RuleException("当前报价含Excel人工价格，请先在工作台确认替换人工价格并重新试算，再导出参数校对版");
 			var nextBody = excelParameterBody(map(q.get("body")), parsed);
-			var calculated = compute(nextBody, repo.catalogs(), map(settings(actor).get("policy")));
+			var calculated = compute(nextBody, resources, map(settings(actor).get("policy")));
 			parsed.putAll(obj("input_recalculated", true, "calculation_issues", calculated.get("issues"), "pending_count", calculated.get("pending_count"),
 					"subtotal", calculated.get("subtotal"), "material_total", calculated.get("material_total"),
-					"equipment_freight_total", calculated.get("equipment_freight_total"), "before_payment_total", calculated.get("before_payment_total")));
+					"equipment_freight_total", calculated.get("equipment_freight_total"), "before_payment_total", calculated.get("before_payment_total"),
+					"installation_total", map(map(calculated.get("fees")).get("installation")).get("amount"),
+					"equipment_freight_included", map(map(calculated.get("fees")).get("equipment_freight")).get("included_in_rows"),
+					"fees", calculated.get("fees"), "payment", calculated.get("payment"), "total", calculated.get("total"),
+					"payment_amount", calculated.get("payment_amount"), "rounding_difference", calculated.get("rounding_difference"),
+					"formal_ready", calculated.get("formal_ready")));
+			attachExcelPreviewLines(parsed, nextBody, calculated);
 			attachExcelInputResults(parsed, nextBody, calculated);
 		}
 		var regionBody = map(q.get("body"));
@@ -1746,18 +2206,18 @@ public class QuoteService {
 			parsed.put("system_location", expectedLocation);
 		}
 		if (!yes(parsed.get("input_recalculated")) && list(parsed.get("scope_restorations")).isEmpty())
-			resolveReviewEquipmentFreight(map(q.get("body")), result, parsed, repo.catalogs());
-		parsed.put("installation_rule_candidates", InstallationRuleLearning.candidates(map(q.get("body")), result, parsed, repo.catalogs()));
+			resolveReviewEquipmentFreight(map(q.get("body")), result, parsed, resources);
+		parsed.put("installation_rule_candidates", InstallationRuleLearning.candidates(map(q.get("body")), result, parsed, resources));
 		String importId = uuid();
 		parsed.putAll(obj("filename", clean, "base_revision", expectedRevision));
 		repo.update(
 				"INSERT INTO quote_import(id,owner_id,filename,parsed,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
 				importId, actor.id(), clean, repo.json(parsed));
 		List<Map<String, Object>> changes = list(parsed.get("changes"));
-		List<Map<String, Object>> reviewRows = new ArrayList<>(list(parsed.get("lines")));
+		List<Map<String, Object>> reviewRows = new ArrayList<>(list(parsed.getOrDefault("calculated_lines", parsed.get("lines"))));
 		reviewRows.sort(Comparator
 			.comparingInt((Map<String, Object> line) -> yes(line.get("changed")) ? 0 : yes(line.get("pending")) ? 1 : 2)
-			.thenComparingInt(line -> n(line.get("visible_row")).intValue()));
+			.thenComparingInt(line -> blank(line.get("visible_row")) ? Integer.MAX_VALUE : n(line.get("visible_row")).intValue()));
 		return obj("import_id", importId, "filename", clean, "input_recalculated", parsed.get("input_recalculated"),
 				"input_results", parsed.get("input_results"), "calculation_issues", parsed.get("calculation_issues"), "line_count", parsed.get("line_count"), "change_count",
 				parsed.get("change_count"), "location_changed", parsed.get("location_changed"), "location_text", parsed.get("location_text"),
@@ -1769,8 +2229,75 @@ public class QuoteService {
 				"equipment_freight_included", parsed.get("equipment_freight_included"),
 				"installation_total", parsed.get("installation_total"),
 				"before_payment_total", parsed.get("before_payment_total"), "column_count", parsed.get("column_count"),
-				"review_rows", reviewRows, "scope_restorations", list(parsed.get("scope_restorations")),
+				"fees", parsed.get("fees"), "payment", parsed.get("payment"), "total", parsed.get("total"),
+				"payment_amount", parsed.get("payment_amount"), "rounding_difference", parsed.get("rounding_difference"), "formal_ready", parsed.get("formal_ready"),
+				"review_rows", reviewRows, "price_conflicts", parsed.get("price_conflicts"), "scope_restorations", list(parsed.get("scope_restorations")),
 				"installation_rule_candidates", parsed.get("installation_rule_candidates"), "can_publish_installation_rules", actor.manager());
+	}
+
+	/** 备注也是引擎输入；人工价格仅在前后确定规则计算效果相同时保留，避免词表漏掉计价要求。 */
+	private Map<String, Object> pricingEffect(Map<String, Object> body, Map<String, Object> result) {
+		var effect = obj();
+		// 即使原行尚缺其他参数而无法得出金额，也不能漏掉已经改变的远控、材质、尺寸等有效输入。
+		effect.put("effective_inputs", list(body.get("rows")).stream().map(row -> obj("kind", EquipmentPricingEngine.classify(row),
+				"attributes", EquipmentPricingEngine.parseAttributes(row))).toList());
+		for (String key : List.of("total", "subtotal", "material_total", "equipment_freight_total", "before_payment_total", "pending_count", "formal_ready", "issues", "payment"))
+			effect.put(key, result.get(key));
+		effect.put("rows", list(result.get("rows")).stream().map(row -> {
+			var value = obj();
+			for (String key : List.of("status", "reason", "billing_unit", "billing_quantity", "unit_price", "amount", "body_amount", "installation_status", "installation_reason", "installation_amount", "line_total"))
+				value.put(key, row.get(key));
+			return value;
+		}).toList());
+		effect.put("installation_total", map(map(result.get("fees")).get("installation")).get("amount"));
+		return effect;
+	}
+
+	/** 用当前修订的导出顺序和原值核验无产品ID的附项身份，再绑定安装数组位置；同名附项也不会串项。 */
+	private void bindReviewInstallationInputs(Map<String, Object> body, Map<String, Object> result, Map<String, Object> parsed) {
+		var expected = exporter.reviewLines(body, result);
+		for (var line : list(parsed.get("lines"))) {
+			if (!blank(line.get("source_row_id"))) continue;
+			String key = s(line, "line_key");
+			if (!key.matches("line-\\d+")) throw new RuleException("安装附项关联无法识别，请重新导出校对版");
+			int index = Integer.parseInt(key.substring(5)) - 1;
+			if (index < 0 || index >= expected.size()) throw new RuleException("安装附项关联已变化，请重新导出校对版");
+			var original = expected.get(index); var baseline = map(line.get("before_values"));
+			for (String field : List.of("name", "spec", "process", "unit", "remark"))
+				if (!s(original, field).equals(s(baseline, field))) throw new RuleException("安装附项原值与当前报价不一致，请重新导出校对版");
+			if (blank(original.get("quantity")) != blank(baseline.get("quantity"))
+					|| !blank(original.get("quantity")) && n(original.get("quantity")).compareTo(n(baseline.get("quantity"))) != 0)
+				throw new RuleException("安装附项数量与当前报价不一致，请重新导出校对版");
+			if (original.get("installation_extra_index") != null) line.put("installation_extra_index", original.get("installation_extra_index"));
+			if (s(original, "name").equals("现场附加费") && s(original, "process").equals("整单汇总")) line.put("installation_site_note", true);
+		}
+	}
+
+	/** 产品备注、独立安装备注和现场说明分别写入其长期输入，而不是只修改本次展示结果。 */
+	private static void applyReviewRemarks(Map<String, Object> body, Map<String, Object> parsed) {
+		Map<String, Map<String, Object>> rows = new HashMap<>();
+		for (var row : list(body.get("rows"))) rows.put(s(row, "row_id"), row);
+		for (var line : list(parsed.get("lines"))) {
+			if (list(line.get("changes")).stream().noneMatch(change -> s(change, "kind").equals("manual") && s(change, "field").equals("remark"))) continue;
+			var row = rows.get(s(line, "source_row_id"));
+			if (row != null) { row.put("remark", line.get("remark")); continue; }
+			String remark = s(line, "remark"), before = s(map(line.get("before_values")), "remark");
+			if (line.get("installation_extra_index") != null) {
+				int index = n(line.get("installation_extra_index")).intValueExact();
+				var items = list(body.get("installation_items"));
+				if (index < 0 || index >= items.size()) throw new RuleException("独立安装项已变化，请重新导出校对版");
+				var item = items.get(index);
+				String oldNote = s(item, "note");
+				String prefix = oldNote.isEmpty() ? before : before.endsWith("；" + oldNote) ? before.substring(0, before.length() - oldNote.length() - 1) : "";
+				item.put("note", !prefix.isEmpty() && remark.startsWith(prefix) ? remark.substring(prefix.length()).replaceFirst("^；", "") : remark);
+			}
+			else if (yes(line.get("installation_site_note"))) {
+				var options = map(body.get("installation_options"));
+				String oldNote = s(options, "site_note"), suffix = "；附加原因：" + oldNote;
+				String prefix = !oldNote.isEmpty() && before.endsWith(suffix) ? before.substring(0, before.length() - suffix.length()) : before;
+				options.put("site_note", remark.startsWith(prefix) ? remark.substring(prefix.length()).replaceFirst("^；(?:附加原因：)?", "") : remark);
+			}
+		}
 	}
 
 	private static String quotationScope(Map<String, Object> row) {
@@ -1787,11 +2314,15 @@ public class QuoteService {
 				&& Set.of("material_unit", "material_amount", "installation_amount", "line_total").contains(s(change, "field"))))
 			throw new RuleException("本次同时修改了产品参数和人工价格，请先导回参数并重新试算，再核对人工价格，避免沿用旧参数金额");
 		var body = repo.object(repo.json(original));
+		applyReviewRemarks(body, parsed);
 		Map<String, Map<String, Object>> byId = new HashMap<>();
 		for (var row : list(body.get("rows"))) byId.put(s(row, "row_id"), row);
 		for (var line : list(parsed.get("lines"))) {
 			if (!yes(line.get("changed"))) continue;
 			var row = byId.get(s(line, "source_row_id"));
+			boolean onlyRemark = list(line.get("changes")).stream().filter(change -> s(change, "kind").equals("manual"))
+					.allMatch(change -> s(change, "field").equals("remark"));
+			if (onlyRemark) continue;
 			if (row == null || yes(row.get("excluded")) || yes(row.get("installation_only")))
 				throw QuoteExcelParameters.invalid(n(line.get("visible_row")).intValue(), "本行不参与产品供货计价，不能修改产品参数");
 			var before = repo.object(repo.json(row));
@@ -1805,17 +2336,8 @@ public class QuoteService {
 				if (field.equals("process")) attributes.put("flange", change.get("after"));
 			}
 			var updates = map(line.get("parameter_updates"));
-			if (List.of("name", "spec", "remark").stream().anyMatch(key -> !s(before, key).equals(s(row, key)))) {
-				var previous = AiQuoteReviewImportService.inferred(before); var current = AiQuoteReviewImportService.inferred(row);
-				Set<String> inferredFields = new HashSet<>(previous.keySet()); inferredFields.addAll(current.keySet());
-				boolean manualKind = s(attributes, "equipment_kind_source").equals("manual");
-				for (String field : inferredFields)
-					if (!s(previous, field).equals(s(current, field)) && !updates.containsKey(field)
-							&& !(manualKind && field.equals("equipment_kind"))) attributes.remove(field);
-				if (!manualKind && !s(previous, "equipment_kind").equals(s(current, "equipment_kind"))) row.put("category", "");
-				row.put("source_text", s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark"));
-			}
 			attributes.putAll(updates);
+			QuoteInputChanges.saved(before, row, QuoteInputChanges.explicitFields(before, row));
 			if (map(line.get("parameter_updates")).containsKey("equipment_kind")) {
 				attributes.put("equipment_kind_source", "manual"); row.put("category", "");
 			}
@@ -1830,13 +2352,36 @@ public class QuoteService {
 		return body;
 	}
 
+	/** 原始lines及changes继续作为回导证据；展示行单独使用当次试算，与再次导出的费用和明细一致。 */
+	private void attachExcelPreviewLines(Map<String, Object> target, Map<String, Object> body, Map<String, Object> result) {
+		var originals = new ArrayList<>(list(target.get("lines")));
+		List<Map<String, Object>> display = new ArrayList<>();
+		for (var calculated : exporter.reviewLines(body, result)) {
+			String sourceId = s(calculated, "source_row_id");
+			var previous = originals.stream().filter(line -> !sourceId.isBlank()
+					? sourceId.equals(s(line, "source_row_id"))
+					: s(line, "source_row_id").isBlank() && s(line, "name").equals(s(calculated, "name"))
+							&& s(line, "process").equals(s(calculated, "process"))).findFirst().orElse(obj());
+			originals.remove(previous);
+			var line = new LinkedHashMap<>(previous);
+			line.putAll(calculated);
+			line.putIfAbsent("changed", false); line.putIfAbsent("changes", List.of());
+			line.putIfAbsent("sequence", display.size() + 1);
+			display.add(line);
+		}
+		target.put("calculated_lines", display);
+		target.put("line_count", display.size());
+	}
+
 	private static void attachExcelInputResults(Map<String, Object> target, Map<String, Object> body, Map<String, Object> result) {
 		var products = list(body.get("rows")); var rows = list(result.get("rows"));
 		List<Map<String, Object>> outcomes = new ArrayList<>();
 		for (int i = 0; i < Math.min(products.size(), rows.size()); i++) {
 			var source = products.get(i); var calculated = rows.get(i);
 			outcomes.add(obj("row_id", source.get("row_id"), "name", source.get("name"), "source_location", QuoteExcelParameters.location(source),
-					"status", calculated.get("status"), "reason", calculated.get("reason"), "unit_price", calculated.get("unit_price"), "amount", calculated.get("amount")));
+					"status", calculated.get("status"), "reason", calculated.get("reason"), "unit_price", calculated.get("unit_price"), "amount", calculated.get("amount"),
+					"installation_status", calculated.get("installation_status"), "installation_reason", calculated.get("installation_reason"),
+					"installation_amount", calculated.get("installation_amount"), "line_total", calculated.get("line_total")));
 		}
 		target.put("input_results", outcomes);
 	}
@@ -2088,6 +2633,7 @@ public class QuoteService {
 			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "校对版导入记录不存在或无权访问");
 		Map<String, Object> q = quote(id, actor, true, true);
 		revision(q, data);
+		requireReviewedAiForOrdinaryImport(q);
 		Map<String, Object> parsed = map(imported.get("parsed"));
 		if (!s(parsed, "type").equals("review_import_v1") || !s(parsed, "quote_id").equals(id))
 			throw new RuleException("校对版导入记录与当前报价不匹配");
@@ -2101,19 +2647,26 @@ public class QuoteService {
 		var installationLearningQuote = list(data.get("installation_rules")).isEmpty() ? q : repo.object(repo.json(q));
 		if (result.isEmpty())
 			throw new RuleException("当前报价尚未试算，不能应用校对结果");
+		if (stale(body, result)) conflict("计价输入或运算规则已变化，请重新试算并导出新的校对版");
 		if (yes(parsed.get("input_recalculated"))) {
+			if (!(data.getOrDefault("fixed_amount_rows", List.of()) instanceof List<?> choices) || !choices.isEmpty())
+				throw new RuleException("参数重算不能同时保留旧人工总价，请重新导出价格校对版");
 			if (!list(data.get("installation_rules")).isEmpty()) throw new RuleException("本次先回导参数，重新导出价格校对版后再采集安装规则");
 			var inputBody = excelParameterBody(body, parsed);
-			if (!blank(inputBody.get("ai_review_status"))) inputBody.put("ai_review_status", "approved");
 			var inputResult = compute(inputBody, repo.catalogs(), map(settings(actor).get("policy")));
 			inputResult.putAll(obj("calculated_at", OffsetDateTime.now().toString(), "template_sha256", DuctExportService.templateHash()));
 			repo.updateOrder(id, obj("body", inputBody, "result", inputResult), true, true);
 			storeExcelParameterReport(id, s(imported, "filename"), list(parsed.get("changes")));
 			repo.audit(actor, "apply_excel_parameters", id, obj("import_id", importId, "changes", parsed.get("changes"), "pending_count", inputResult.get("pending_count")));
+			repo.audit(actor, "apply_review_import", id, obj("import_id", importId, "input_recalculated", true, "changes", parsed.get("changes")));
 			return mutationResponse(q, inputBody, inputResult);
 		}
+		applyReviewRemarks(body, parsed);
 		Set<String> restoredScope = restoreReviewScope(body, parsed, data);
+		QuoteReviewImportService.acceptFixedAmounts(parsed, data.getOrDefault("fixed_amount_rows", List.of()));
+		QuoteReviewImportService.refreshCompleteness(parsed);
 		var resources = repo.catalogs();
+		requireSupportedReviewMaterials(body, result, list(parsed.get("lines")), resources);
 		bindRestoredReviewRows(body, result, restoredScope, resources);
 		if (!restoredScope.isEmpty() && map(result.get("payment")).isEmpty()) {
 			// 原单全不报价时没有付款结果；恢复供货后只取得现行付款方案，不覆盖Excel人工价格。
@@ -2133,6 +2686,10 @@ public class QuoteService {
 		resolveReviewEquipmentFreight(body, result, parsed, resources);
 		List<Map<String, Object>> resultRows = list(result.get("rows")), bodyRows = list(body.get("rows")),
 				manualLines = list(parsed.get("lines"));
+		for (var line : manualLines)
+			if (!yes(line.get("price_changed")) && blank(line.get("fixed_amount_reason")))
+				list(result.get("manual_lines")).stream().filter(previous -> s(previous, "source_row_id").equals(s(line, "source_row_id")))
+						.findFirst().ifPresent(previous -> { if (!blank(previous.get("fixed_amount_reason"))) line.put("fixed_amount_reason", previous.get("fixed_amount_reason")); });
 		Map<String, Integer> rowIndexes = new HashMap<>();
 		for (int i = 0; i < bodyRows.size(); i++)
 			rowIndexes.put(s(bodyRows.get(i), "row_id"), i);
@@ -2144,7 +2701,13 @@ public class QuoteService {
 				continue;
 			Map<String, Object> row = resultRows.get(index);
 			Map<String, Object> source = bodyRows.get(index);
+			if (list(line.get("changes")).stream().anyMatch(change -> s(change, "kind").equals("manual") && s(change, "field").equals("remark")))
+				source.put("remark", line.get("remark"));
 			if (yes(source.get("excluded")))
+				continue;
+			if (list(line.get("changes")).stream().anyMatch(change -> s(change, "kind").equals("manual") && s(change, "field").equals("quantity")))
+				source.put(s(source, "category").equals("风管") ? "engineering_quantity" : "quantity", line.get("quantity"));
+			if (!yes(line.get("price_changed")) && blank(line.get("fixed_amount_reason")) && !restoredScope.contains(rowId))
 				continue;
 			if (yes(source.get("installation_only"))) {
 				boolean installationPending = yes(line.get("pending")) || !InstallationPricingEngine.enabled(body);
@@ -2246,15 +2809,20 @@ public class QuoteService {
 			if (!freightPending && !equipmentFreightIncluded && body.containsKey("equipment_options"))
 				map(body.get("equipment_options")).put("freight_amount", text(equipmentFreightTotal));
 		}
+		boolean manualPrices = !map(result.get("manual_review_import")).isEmpty() || !restoredScope.isEmpty()
+				|| manualLines.stream().anyMatch(line -> yes(line.get("price_changed")) || !blank(line.get("fixed_amount_reason")));
 		Map<String, Object> review = obj("import_id", importId, "filename", imported.get("filename"), "imported_at",
-				OffsetDateTime.now().toString(), "actor", actor.name(), "change_count", parsed.get("change_count"));
+				OffsetDateTime.now().toString(), "actor", actor.name(), "change_count", parsed.get("change_count"),
+				"fixed_amount_rows", data.getOrDefault("fixed_amount_rows", List.of()));
 		result.putAll(obj("rows", resultRows, "manual_lines", manualLines, "subtotal", text(materialTotal),
 				"material_total", text(materialTotal), "total", text(total), "pending_count", pending, "issues", issues,
 				"equipment_freight_total", text(equipmentFreightTotal), "formal_ready", issues.isEmpty(),
 				"before_payment_total", text(beforePayment), "payment_amount",
-				text(paymentAmount), "rounding_difference", text(roundingDifference), "manual_review_import", review,
+				text(paymentAmount), "rounding_difference", text(roundingDifference),
 				"policy", policy, "calculated_at",
 				OffsetDateTime.now().toString(), "template_sha256", DuctExportService.templateHash()));
+		if (manualPrices) result.put("manual_review_import", review);
+		result.put("pricing_input_fingerprint", QuoteCalculationInputs.fingerprint(body));
 		resultRows.forEach(QuoteProblem::present);
 		// 人工核实价格不再依赖被替代的材料目录；其余自动行仍保留原目录绑定，不能借回导确认旧价。
 		var remainingKinds = catalogBindings(body, result, repo.catalogs()).stream().map(binding -> s(binding, "kind")).toList();
@@ -2267,7 +2835,8 @@ public class QuoteService {
 		repo.updateOrder(id, obj("body", body, "result", result), true, true);
 		repo.audit(actor, "apply_review_import", id,
 				obj("import_id", importId, "change_count", parsed.get("change_count"), "pending_count", pending, "subtotal",
-						parsed.get("subtotal"), "restored_scope_row_ids", new ArrayList<>(restoredScope)));
+						parsed.get("subtotal"), "changes", parsed.get("changes"), "fixed_amount_rows", data.getOrDefault("fixed_amount_rows", List.of()),
+						"restored_scope_row_ids", new ArrayList<>(restoredScope)));
 		return obj("result", result, "revision", n(q.get("revision")).intValue() + 1, "installation_rules", installationDrafts);
 	}
 
@@ -2359,19 +2928,42 @@ public class QuoteService {
 		boolean exported = repo.scalar("SELECT COUNT(*) FROM quote_export WHERE quote_id=?", Integer.class, id) > 0;
 		Map<String, Object> body = map(q.get("body"));
 		switch (action) {
+			case "confirm-sources" -> {
+				if (!state.equals("draft")) conflict("只有草稿可以确认原始资料");
+				if (!yes(data.get("review_confirmed")) || !(data.get("row_ids") instanceof List<?> selected)
+						|| selected.isEmpty() || selected.size() > 10000)
+					throw new RuleException("请先选择并核对原始资料，再确认所选行");
+				Set<String> selectedIds = new LinkedHashSet<>();
+				for (var value : (List<?>) data.get("row_ids")) {
+					if (!(value instanceof String) || str(value).isBlank()) throw new RuleException("所选来源行不正确");
+					selectedIds.add(str(value));
+				}
+				var selectedRows = list(body.get("rows")).stream().filter(row -> selectedIds.contains(s(row, "row_id"))).toList();
+				if (selectedRows.size() != selectedIds.size()) throw new RuleException("所选行已变化，请重新检查来源");
+				for (var row : selectedRows) {
+					AiInputReview.refresh(row, false);
+					if (!sourceConfirmable(row)) throw new RuleException("第" + row.get("source_row") + "行需先修正名称、单位、数量或尺寸，再核对原始资料");
+				}
+				for (var row : selectedRows) row.put("source_issue_confirmed", true);
+				if (!blank(body.get("ai_review_status"))) body.put("ai_review_status", "pending");
+				repo.updateOrder(id, obj("body", body, "result", null), true, true);
+				var actionAudit = obj("row_ids", selectedIds, "reviewed_revision", data.get("revision"),
+						"sources", selectedRows.stream().map(row -> obj("row_id", row.get("row_id"), "location", QuoteExcelParameters.location(row),
+								"name", row.get("name"), "spec", row.get("spec"), "unit", row.get("unit"),
+								"quantity", row.get("quantity"), "engineering_quantity", row.get("engineering_quantity"))).toList());
+				repo.audit(actor, "confirm-sources_quote", id, actionAudit);
+				return mutationResponse(q, body, null);
+			}
 			// 人工确认只解除AI清单核验门槛，缺失的实际计价条件仍由试算返回待确认。
 			case "approve-ai" -> {
 				if (!state.equals("draft") || !s(body, "ai_review_status").equals("pending"))
 					conflict("只有待核对的AI草稿可以确认");
 				if (!yes(data.get("review_confirmed")) || list(body.get("rows")).isEmpty())
 					throw new RuleException("请先核对所有清单行，再确认AI草稿");
-				for (var row : list(body.get("rows"))) {
-					if (yes(row.get("excluded"))) continue;
-					String invalid = AiInputReview.invalidNumberReason(row);
-					if (!invalid.isBlank()) throw new RuleException("第" + row.get("source_row") + "行：" + invalid);
-					if (!AiInputReview.clearedFields(map(row.get("attributes"))).isEmpty())
-						throw new RuleException("第" + row.get("source_row") + "行参数已人工清空，请补齐后再确认AI草稿");
-				}
+				var blocking = aiReviewIssues(body).stream().filter(issue -> yes(issue.get("blocking"))).toList();
+				if (!blocking.isEmpty()) throw new RuleException("AI核验发现" + blocking.size() + "项需修正："
+						+ String.join("；", blocking.stream().limit(8).map(issue -> "第" + issue.get("standard_row") + "行：" + s(issue, "message")).toList())
+						+ (blocking.size() > 8 ? "；其余问题请查看核验结果" : ""));
 				for (var special : list(body.get("source_special_rows"))) {
 					if (Set.of("corner_count", "clip_meters", "flange_30_meters", "flange_40_meters").contains(s(special, "kind"))) {
 						String label = "第" + special.get("source_row") + "行辅材数量/米数";
@@ -2474,6 +3066,10 @@ public class QuoteService {
 	 */
 	@Transactional(transactionManager = "quotationTransactionManager", propagation = Propagation.NOT_SUPPORTED)
 	public Map<String, Object> export(Actor actor, String id, Map<String, Object> data) {
+		try (var parsing = QuoteParsingScope.open()) { return exportParsed(actor, id, data); }
+	}
+
+	private Map<String, Object> exportParsed(Actor actor, String id, Map<String, Object> data) {
 		if (!generatingExports.add(id))
 			conflict("此报价正在生成导出文件，请稍候从历史导出文件下载");
 		try {
@@ -2520,16 +3116,21 @@ public class QuoteService {
 		Map<String, Object> result = map(q.get("result"));
 		if (result.isEmpty())
 			throw new RuleException("请先保存并试算");
+		if (kind.equals("formal") && (yes(result.get("preview_ai"))
+				|| !blank(map(q.get("body")).get("ai_review_status")) && !s(map(q.get("body")), "ai_review_status").equals("approved")))
+			throw new RuleException("AI清单尚未完成正式试算，请完成清单核验并重新试算后导出");
 		if (stale(map(q.get("body")), result))
 			conflict("运算规则已更新，请重新试算后导出");
+		ValidationContext validation = null;
 		// 校对版也必须使用当前计算依据，不能从未刷新的页面导出旧价或旧提示。
 		if (s(q, "state").equals("draft")) {
 			repo.catalogLock();
 			var currentResources = repo.catalogs();
-			if (productRulesChanged(map(q.get("body")), result, currentResources) || catalogsChanged(result, currentResources))
+			validation=new ValidationContext(map(q.get("body")),result,currentResources);
+			if (validation.pricesChanged() || validation.rulesChanged() || catalogsChanged(result, currentResources))
 				conflict("产品规则或生效指标已更新，请重新试算后导出校对版或正式报价");
 		}
-		if (kind.equals("formal") && repairImportedReviewFreight(map(q.get("body")), result, repo.catalogs())) {
+		if (kind.equals("formal") && repairImportedReviewFreight(map(q.get("body")), result, validation.resources)) {
 			repo.updateOrder(id, obj("result", result), false, true);
 			repo.audit(actor, "repair_review_equipment_freight", id,
 					obj("amount", result.get("equipment_freight_total"), "pending_count", result.get("pending_count")));
@@ -2537,18 +3138,18 @@ public class QuoteService {
 		if (kind.equals("formal") && !yes(result.get("formal_ready")))
 			throw new RuleException("正式报价条件未满足："
 					+ String.join("；", ((List<?>) result.get("issues")).stream().map(QuoteData::str).toList()));
+		if (kind.equals("formal")) requireManualMaterialPrices(map(q.get("body")), result, validation);
 		if (kind.equals("formal")) {
 			List<Map<String, Object>> existing = repo.query(
 					"SELECT id,filename FROM quote_export WHERE quote_id=? AND kind='formal' ORDER BY created_at", id);
 			// 已有正式文件时返回原快照，实现重复正式导出的幂等性。
 			if (!existing.isEmpty())
 				return obj("quote", q, "existing", existing.get(0));
-			repo.catalogLock();
 			Map<String, Object> policy = repo.find("quote_setting", "policy", true);
 			if (policy == null || !yes(map(policy.get("body")).get("formal_template_confirmed")))
 				conflict("负责人已暂停正式模板导出，草稿和历史下载仍可使用");
-			var resources = repo.catalogs();
-			if (productRulesChanged(map(q.get("body")), result, resources))
+			var resources = validation.resources;
+			if (validation.rulesChanged())
 				conflict("产品别名或组合规则已变更、停用或过期，请重新试算后生成正式报价");
 			// 原生自动计价行需复核当前生效指标；人工补价行保留manual_v1确认金额。
 			boolean hasEquipment = list(result.get("rows")).stream()
@@ -2571,6 +3172,13 @@ public class QuoteService {
 					conflict("设备指标已变更或停用，请重新试算后生成正式报价");
 			}
 			if (InstallationPricingEngine.enabled(map(q.get("body")))) {
+				var wrapPriceRefs = list(map(map(result.get("fees")).get("installation")).get("lines")).stream()
+					.map(line -> map(line.get("wrap_price_catalog"))).filter(ref -> !ref.isEmpty()).toList();
+				if (!wrapPriceRefs.isEmpty()) {
+					var equipmentCatalogs = EquipmentCatalog.active(resources, LocalDate.now());
+					if (equipmentCatalogs.size() != 1 || wrapPriceRefs.stream().anyMatch(ref -> !s(ref, "id").equals(s(equipmentCatalogs.get(0), "id"))))
+						conflict("防火包裹安装销售价已更新或停用，请重新试算后生成正式报价");
+				}
 				var active = InstallationCatalog.active(resources, LocalDate.now());
 				var used = map(map(map(result.get("fees")).get("installation")).get("catalog"));
 				if (active.size() != 1 || !s(active.get(0), "id").equals(s(used, "id")))
@@ -2592,6 +3200,63 @@ public class QuoteService {
 				}
 		}
 		return obj("quote", q, "fingerprint", fingerprint);
+	}
+
+	/** 人工填写价格也不能将明确不承接的材料变为可供货产品；仅安装和不报价行保持原范围。 */
+	private static void requireSupportedReviewMaterials(Map<String, Object> body, Map<String, Object> result,
+			List<Map<String, Object>> lines, List<Map<String, Object>> resources) {
+		var sourceRows = list(body.get("rows")); var calculatedRows = list(result.get("rows"));
+		var preparation = ProductRuleCatalog.preparation(resources, LocalDate.now());
+		Map<String, Integer> indexes = new HashMap<>();
+		for (int i = 0; i < sourceRows.size(); i++) indexes.put(s(sourceRows.get(i), "row_id"), i);
+		for (var line : lines) {
+			Integer index = indexes.get(s(line, "source_row_id"));
+			if (index == null) continue;
+			var source = sourceRows.get(index);
+			if (yes(source.get("excluded")) || yes(source.get("installation_only"))
+					|| blank(line.get("material_amount"))) continue;
+			requireSupportedMaterialIdentity(source, index < calculatedRows.size() ? calculatedRows.get(index) : obj(), preparation);
+		}
+	}
+
+	/** 客户叫法不能掩盖已绑定的规范产品；历史快照缺失时仍检查本次生效规则。 */
+	private static void requireSupportedMaterialIdentity(Map<String, Object> source, Map<String, Object> calculated,
+			ProductRuleCatalog.Preparation preparation) {
+		requireSupportedMaterialIdentity(source,calculated,() -> preparation.prepare(source));
+	}
+
+	private static void requireSupportedMaterialIdentity(Map<String, Object> source, Map<String, Object> calculated,
+			java.util.function.Supplier<Map<String,Object>> prepared) {
+		String issue = UnquotableProducts.issue(source);
+		if (issue.isBlank()) {
+			var identified = new LinkedHashMap<>(source);
+			var rule = map(calculated.get("product_rule"));
+			if (!rule.isEmpty()) identified.put("_product_rule_resource", rule.containsKey("body") ? rule : obj("body", rule));
+			issue = UnquotableProducts.issue(identified);
+		}
+		if (issue.isBlank()) issue = UnquotableProducts.issue(prepared.get());
+		if (!issue.isBlank()) throw new RuleException(s(source, "name") + "：" + issue);
+	}
+
+	/** 历史预览或旧版结果也必须满足本次供货范围，材料空白不能作为零价正式导出。 */
+	private void requireManualMaterialPrices(Map<String, Object> body, Map<String, Object> result, ValidationContext validation) {
+		Map<String, Map<String, Object>> sources = new HashMap<>();
+		var sourceRows = list(body.get("rows")); var calculatedRows = list(result.get("rows"));
+		for (int i = 0; i < sourceRows.size(); i++) {
+			var source = sourceRows.get(i);
+			sources.put(s(source, "row_id"), source);
+			if (yes(source.get("excluded")) || yes(source.get("installation_only"))) continue;
+			final int rowIndex=i;
+			requireSupportedMaterialIdentity(source, i < calculatedRows.size() ? calculatedRows.get(i) : obj(), () -> validation.preparedRows().get(rowIndex));
+		}
+		for (var line : list(result.get("manual_lines"))) {
+			var source = sources.get(s(line, "source_row_id"));
+			if (source == null || yes(source.get("excluded"))) continue;
+			if (!yes(source.get("installation_only")) && blank(line.get("material_amount")))
+				throw new RuleException("正式报价条件未满足：" + s(source, "name") + "材料金额仍未确定，请重新回导或试算；明确零价请填写0");
+			if (InstallationPricingEngine.enabled(body) && blank(line.get("installation_amount")))
+				throw new RuleException("正式报价条件未满足：" + s(source, "name") + "安装金额仍未确定；明确零价请填写0");
+		}
 	}
 
 	/** 报价正文、结果、状态和模板共同标识导出快照，不仅依赖页面的修订号。 */
@@ -2660,6 +3325,85 @@ public class QuoteService {
 		leader(actor);
 		return repo
 			.query("SELECT id,actor_name,action,target,created_at FROM quote_audit ORDER BY created_at DESC LIMIT 200");
+	}
+
+	/** 只分页读取摘要；完整差异按单条请求加载，避免列表读取历史大正文。 */
+	public Map<String, Object> auditPage(Actor actor, int page, int size, String person, String target,
+			String action, String startDate, String endDate) {
+		leader(actor);
+		if (page < 1 || size < 1 || size > 100 || (long) (page - 1) * size > Integer.MAX_VALUE)
+			throw new RuleException("审计页码或每页数量不正确（每页1至100条）");
+		List<String> conditions = new ArrayList<>();
+		List<Object> args = new ArrayList<>();
+		person = textValue(person, 200); target = textValue(target, 64); action = textValue(action, 64);
+		if (!person.isBlank()) {
+			Long actorId = null;
+			try { actorId = Long.valueOf(person); }
+			catch (NumberFormatException ignored) { }
+			conditions.add(actorId == null ? "actor_name LIKE ? ESCAPE '!'" : "(actor_name LIKE ? ESCAPE '!' OR actor_id=?)");
+			args.add(auditSearch(person));
+			if (actorId != null) args.add(actorId);
+		}
+		if (!target.isBlank()) { conditions.add("target LIKE ? ESCAPE '!'"); args.add(auditSearch(target)); }
+		if (!action.isBlank()) { conditions.add("action=?"); args.add(action); }
+		try {
+			LocalDate start = blank(startDate) ? null : LocalDate.parse(startDate);
+			LocalDate end = blank(endDate) ? null : LocalDate.parse(endDate);
+			if (start != null && end != null && end.isBefore(start)) throw new RuleException("审计结束日期不能早于开始日期");
+			if (start != null) { conditions.add("created_at>=?"); args.add(java.sql.Timestamp.valueOf(start.atStartOfDay())); }
+			if (end != null) { conditions.add("created_at<?"); args.add(java.sql.Timestamp.valueOf(end.plusDays(1).atStartOfDay())); }
+		}
+		catch (java.time.DateTimeException invalid) { throw new RuleException("审计日期格式不正确，请使用YYYY-MM-DD"); }
+		String where = conditions.isEmpty() ? "" : " WHERE " + String.join(" AND ", conditions);
+		long total = repo.scalar("SELECT COUNT(*) FROM quote_audit" + where, Long.class, args.toArray());
+		var queryArgs = new ArrayList<>(args); queryArgs.add(size); queryArgs.add((page - 1) * size);
+		var records = repo.query("SELECT id,actor_id,actor_name,action,target,created_at FROM quote_audit" + where
+				+ " ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?", queryArgs.toArray());
+		records.forEach(record -> record.put("action_label", auditActionLabel(s(record, "action"))));
+		return obj("records", records, "total", total, "page", page, "size", size);
+	}
+
+	private static String auditSearch(String value) {
+		return "%" + value.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+	}
+
+	/** 只展示已存的前后差异；旧记录没有新值时明确说明，禁止用当前报价猜历史值。 */
+	public Map<String, Object> auditDetail(Actor actor, String id) {
+		leader(actor);
+		var records = repo.query("SELECT id,actor_id,actor_name,action,target,created_at,detail FROM quote_audit WHERE id=?", textValue(id, 64));
+		if (records.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "操作记录不存在");
+		var record = records.get(0);
+		var stored = repo.object(s(record, "detail"));
+		var summary = obj();
+		stored.forEach((key, value) -> {
+			if (Set.of("previous_body", "changes", "changes_truncated").contains(key)) return;
+			String text = value instanceof Map || value instanceof List ? repo.json(value) : str(value);
+			summary.put(key, text.length() <= 3000 ? value : text.substring(0, 3000) + "…（内容过长已截取）");
+		});
+		String note = yes(stored.get("changes_truncated")) ? "此记录的变更明细在记录时已截取；原始修改前快照仍保留在审计记录中。"
+				: stored.containsKey("previous_body") && !stored.containsKey("changes") ? "历史记录仅保存修改前快照，无法可靠还原当时的新值，未使用当前值代替。" : "";
+		var changes = list(stored.get("changes")).stream().map(change -> {
+			var displayed = new LinkedHashMap<>(change);
+			if (blank(displayed.get("label"))) displayed.put("label",
+					blank(displayed.get("field_label")) ? s(displayed, "field") : s(displayed, "field_label"));
+			return displayed;
+		}).toList();
+		record.putAll(obj("action_label", auditActionLabel(s(record, "action")), "detail", summary,
+				"changes", changes, "detail_note", note));
+		return record;
+	}
+
+	private static String auditActionLabel(String action) {
+		return Map.ofEntries(Map.entry("create_quote", "新建报价"), Map.entry("create_ai_quote", "AI整理生成报价"),
+				Map.entry("edit_quote", "修改报价"), Map.entry("calculate_quote", "试算报价"), Map.entry("export_quote", "导出报价"),
+				Map.entry("create_catalog", "创建指标或规则草稿"), Map.entry("edit_catalog", "修改指标或规则"),
+				Map.entry("publish_catalog", "发布指标或规则"), Map.entry("retire_catalog", "停用指标或规则"),
+				Map.entry("reactivate_catalog", "重新启用指标或规则"), Map.entry("revise_catalog", "修订指标或规则"),
+				Map.entry("delete_catalog", "删除规则草稿"), Map.entry("apply_review_import", "回导人工校对价格"),
+				Map.entry("apply_excel_parameters", "回导产品参数并重算"), Map.entry("apply_ai_input_import", "回导AI核验清单"),
+				Map.entry("capture_installation_rule", "采集安装价格规则"), Map.entry("archive_quote", "归档报价"),
+				Map.entry("restore_quote", "恢复报价"), Map.entry("revise_quote", "创建报价修订版"), Map.entry("update_policy", "修改正式导出策略"))
+				.getOrDefault(action, action);
 	}
 
 }

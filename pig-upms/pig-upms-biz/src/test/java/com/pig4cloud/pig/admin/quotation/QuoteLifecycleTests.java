@@ -30,6 +30,141 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class QuoteLifecycleTests {
 	@Test
+	void purchasedDuctFlangesAreVersionedSavedAndExportedWithFixedPriceProvenance() throws Exception {
+		publish();
+		var source = obj("name", "镀锌风管（201不锈钢角铁法兰30×30）", "spec", "800×320", "category", "风管", "unit", "㎡", "engineering_quantity", "10",
+			"attributes", obj("material", "galvanized_40", "thickness", "0.5", "flange_material", "stainless_201", "flange_size", "30×30"));
+		var q = equipmentQuote("mixed_v1", List.of(source));
+		String id = s(q, "id");
+		var body = map(q.get("body"));
+		body.putAll(obj("project_region", "四川", "project_region_confirmed", true, "region_prices_confirmed", true, "revision", q.get("revision")));
+		map(body.get("duct_options")).putAll(obj("area_basis", "open", "include_freight", false));
+		tx(() -> service.save(quoter, id, body));
+		var calculated = tx(() -> service.calculate(quoter, id, rev(service.detail(quoter, id))));
+		var inputs = map(list(map(calculated.get("result")).get("rows")).get(0).get("calculation_inputs"));
+		assertEquals("25", inputs.get("flange_per_meter"));
+		assertEquals("fixed", inputs.get("flange_pricing_mode"));
+		assertTrue(s(inputs, "flange_source_cell").contains("!H47"));
+		var exported = tx(() -> service.export(quoter, id, obj("revision", calculated.get("revision"), "kind", "draft")));
+		try (var book = WorkbookFactory.create(new ByteArrayInputStream((byte[]) service.download(quoter, s(exported, "id")).get("content")))) {
+			String text = "";
+			for (var row : book.getSheet("计算明细")) for (var cell : row) text += cell.toString() + "\n";
+			assertTrue(text.contains("外购法兰成品固定价/米"));
+			assertTrue(text.contains("已含加工费，不使用吨价公式"));
+			assertTrue(text.contains("25") && text.contains("1.72"));
+		}
+		var published = DuctCatalog.active(repo.catalogs(), java.time.LocalDate.now()).get(0);
+		String next = s(tx(() -> service.catalogAction(leader, s(published, "id"), "revise", rev(published))), "id");
+		var draft = repo.find("quote_catalog", next, false);
+		var nextBody = map(draft.get("body"));
+		map(list(nextBody.get("purchased_flanges")).get(0).get("prices_per_m")).put("四川", "26");
+		tx(() -> service.editCatalog(leader, next, obj("revision", draft.get("revision"), "body", nextBody)));
+		tx(() -> service.catalogAction(leader, next, "publish", rev(repo.find("quote_catalog", next, false))));
+		assertEquals("25", map(list(map(repo.find("quote_catalog", s(published, "id"), false).get("body")).get("purchased_flanges")).get(0).get("prices_per_m")).get("四川"));
+		var repriced = tx(() -> service.calculate(quoter, id, rev(service.detail(quoter, id))));
+		assertEquals("26", map(list(map(repriced.get("result")).get("rows")).get(0).get("calculation_inputs")).get("flange_per_meter"));
+	}
+	@Test
+	void nationalWrapInstallationMigratesIntoANewInstallationVersionAndKeepsOldPrices() throws Exception {
+		var equipment = publishEquipment();
+		var oldBody = new ObjectMapper().readValue(DuctExportService.asset("installation-catalog-seed.json"), Map.class);
+		String id = s(tx(() -> service.createCatalog(leader, "installation_catalog", oldBody)), "id");
+		tx(() -> service.catalogAction(leader, id, "publish", rev(repo.find("quote_catalog", id, false))));
+		var previous = repo.find("quote_catalog", id, false);
+		String next = s(tx(() -> service.catalogAction(leader, id, "revise", rev(previous))), "id");
+		var revised = repo.find("quote_catalog", next, false);
+		var body = map(revised.get("body"));
+		assertEquals(56, list(map(previous.get("body")).get("projects")).size());
+		assertEquals(58, list(body.get("projects")).size());
+		var glass = list(body.get("projects")).stream().filter(p -> s(p, "id").equals("national_wrap_glass")).findFirst().orElseThrow();
+		glass.put("price", "23");
+		tx(() -> service.editCatalog(leader, next, obj("revision", revised.get("revision"), "body", body)));
+		tx(() -> service.catalogAction(leader, next, "publish", rev(repo.find("quote_catalog", next, false))));
+		assertEquals("23", InstallationCatalog.fireWrapPrices(map(InstallationCatalog.active(repo.catalogs(), java.time.LocalDate.now()).get(0).get("body"))).get("glass"));
+		assertTrue(InstallationCatalog.fireWrapPrices(map(repo.find("quote_catalog", id, false).get("body"))).isEmpty());
+		assertEquals("20", map(map(map(equipment.get("body")).get("fire_wrap_sales")).get("installation_prices")).get("glass"));
+	}
+	@Test
+	void purchasedFireWrapPersistsVolumePricesAndInstallationAndExportsSaleDetails() throws Exception {
+		var equipment = publishEquipment();
+		String installation = s(tx(() -> service.createCatalog(leader, "installation_catalog", service.installationSeed(leader))), "id");
+		tx(() -> service.catalogAction(leader, installation, "publish", rev(repo.find("quote_catalog", installation, false))));
+		var source = obj("name", "普通铝箔玻璃棉50mm 48K", "spec", "", "quantity", "2", "unit", "m³", "category", "防火包裹", "attributes", obj());
+		var q = equipmentQuote("mixed_v1", List.of(source));
+		String id = s(q, "id"); var body = map(q.get("body"));
+		body.putAll(obj("project_region", "四川", "project_region_confirmed", true, "region_prices_confirmed", true));
+		map(body.get("equipment_options")).put("payment_option", "with_install_cash");
+		map(body.get("installation_options")).putAll(obj("included", true, "region", "四川", "include_auxiliaries", true, "include_site_fee", false));
+		body.put("revision", q.get("revision"));
+		tx(() -> service.save(quoter, id, body));
+		var calculated = tx(() -> service.calculate(quoter, id, rev(service.detail(quoter, id))));
+		var result = map(calculated.get("result"));
+		assertTrue(yes(result.get("formal_ready")), str(result.get("rows")));
+		assertEquals("466.0", list(result.get("rows")).get(0).get("unit_price"));
+		assertEquals("800", map(map(result.get("fees")).get("installation")).get("amount"));
+		assertEquals("1732", result.get("total"));
+		var review = tx(() -> service.export(quoter, id, obj("revision", calculated.get("revision"), "kind", "draft")));
+		try (var book = WorkbookFactory.create(new ByteArrayInputStream((byte[]) service.download(quoter, s(review, "id")).get("content")))) {
+			String text = "";
+			for (var row : book.getSheet("计算明细")) for (var cell : row) text += cell.toString() + "\n";
+			assertTrue(text.contains("材料销售价：普通铝箔玻璃棉"));
+			assertTrue(text.contains("19.3 + 4"));
+			assertTrue(text.contains("全国统一未税销售价"));
+		}
+		// 只安装仍须锁定提供全国安装销售价的设备指标版本。
+		var changed = map(service.detail(quoter, id).get("body"));
+		list(changed.get("rows")).get(0).put("installation_only", true);
+		changed.put("revision", service.detail(quoter, id).get("revision"));
+		tx(() -> service.save(quoter, id, changed));
+		var onlyInstall = tx(() -> service.calculate(quoter, id, rev(service.detail(quoter, id))));
+		assertTrue(yes(map(onlyInstall.get("result")).get("formal_ready")));
+		String next = s(tx(() -> service.catalogAction(leader, s(equipment, "id"), "revise", rev(equipment))), "id");
+		tx(() -> service.catalogAction(leader, next, "publish", rev(repo.find("quote_catalog", next, false))));
+		assertThrows(ResponseStatusException.class, () -> tx(() -> service.export(quoter, id, obj("revision", onlyInstall.get("revision"), "kind", "formal"))));
+	}
+
+	@Test
+	void ductRegionalPricesAreSavedPublishedAndVersionedWithoutMutatingThePreviousVersion() {
+		String id = s(tx(() -> service.seed(leader)), "id");
+		var draft = repo.find("quote_catalog", id, false);
+		var body = map(draft.get("body"));
+		assertTrue(body.containsKey("price_regions"));
+		map(list(body.get("materials")).get(0).get("ton_prices")).put("四川", "5100");
+		tx(() -> service.editCatalog(leader, id, obj("revision", draft.get("revision"), "body", body)));
+		tx(() -> service.catalogAction(leader, id, "publish", rev(repo.find("quote_catalog", id, false))));
+		var published = repo.find("quote_catalog", id, false);
+		String next = s(tx(() -> service.catalogAction(leader, id, "revise", rev(published))), "id");
+		var revised = repo.find("quote_catalog", next, false);
+		var editedBody = map(revised.get("body"));
+		map(list(editedBody.get("materials")).get(0).get("ton_prices")).put("四川", "5200");
+		tx(() -> service.editCatalog(leader, next, obj("revision", revised.get("revision"), "body", editedBody)));
+		tx(() -> service.catalogAction(leader, next, "publish", rev(repo.find("quote_catalog", next, false))));
+		assertEquals("5100", map(list(map(repo.find("quote_catalog", id, false).get("body")).get("materials")).get(0).get("ton_prices")).get("四川"));
+		var active = DuctCatalog.active(repo.catalogs(), java.time.LocalDate.now());
+		assertEquals(next, active.get(0).get("id"));
+		var saved = list(map(active.get(0).get("body")).get("materials")).get(0);
+		assertEquals("5200", map(saved.get("ton_prices")).get("四川"));
+		assertEquals("4090", map(saved.get("ton_prices")).get("贵州"));
+		assertEquals("", map(saved.get("ton_prices")).get("陕西"));
+	}
+
+	@Test
+	void existingDuctDraftCanLoadRegionPricesWithRevisionAndAuthorityChecks() throws Exception {
+		var body = new ObjectMapper().readValue(DuctExportService.asset("duct-catalog-seed.json"), Map.class);
+		String id = s(tx(() -> service.createCatalog(leader, body)), "id");
+		var original = repo.find("quote_catalog", id, false);
+		assertThrows(ResponseStatusException.class, () -> tx(() -> service.catalogAction(quoter, id, "load-regional-prices", rev(original))));
+		tx(() -> service.catalogAction(leader, id, "load-regional-prices", rev(original)));
+		assertThrows(ResponseStatusException.class, () -> tx(() -> service.catalogAction(leader, id, "load-regional-prices", rev(original))));
+		var draft = repo.find("quote_catalog", id, false);
+		assertTrue(map(draft.get("body")).containsKey("price_regions"));
+		assertEquals(body.get("rates"), map(draft.get("body")).get("rates"));
+		assertEquals(body.get("expressions"), map(draft.get("body")).get("expressions"));
+		tx(() -> service.catalogAction(leader, id, "publish", rev(draft)));
+		assertThrows(ResponseStatusException.class, () -> tx(() -> service.catalogAction(leader, id, "load-regional-prices", rev(repo.find("quote_catalog", id, false)))));
+	}
+
+	@Test
 	void electricValveSourceCompletesAiReviewReimportPricingAndFormalExport() throws Exception {
 		var resource = publishEquipment();
 		var source = ElectricValveClassificationTests.normalize("电动对开式多叶调节阀", "electric_control");
@@ -209,7 +344,7 @@ class QuoteLifecycleTests {
 		}
 		var file = new org.springframework.mock.web.MockMultipartFile("files", "客户清单.xlsx",
 				"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", originalBytes);
-		var ai = new AiQuoteImportService(json, "test-key", "http://127.0.0.1:1", true);
+		var ai = AiLegacyNormalizationFixture.legacy(new AiQuoteImportService(json, "test-key", "http://127.0.0.1:1", true));
 		var plan = ai.prepareJob(new org.springframework.web.multipart.MultipartFile[] { file });
 		var raw = obj("name", "正压送风口", "spec", "630×(1200+300)", "unit", "个", "quantity", "1",
 				"equipment_kind", "multi_leaf", "source_locator", "第2行", "recognition_evidence", "正压送风口");
@@ -661,7 +796,7 @@ class QuoteLifecycleTests {
 			var file = new org.springframework.mock.web.MockMultipartFile("files", "客户清单.xlsx",
 					"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", originalBytes);
 			org.springframework.web.multipart.MultipartFile[] files = { file };
-			var ai = new AiQuoteImportService(json, "test-key", "http://127.0.0.1:" + server.getAddress().getPort());
+			var ai = AiLegacyNormalizationFixture.legacy(new AiQuoteImportService(json, "test-key", "http://127.0.0.1:" + server.getAddress().getPort()));
 			var normalized = ai.normalize(files);
 			assertEquals(2, normalized.size());
 			assertEquals("", s(normalized.get(0), "remark"));
@@ -743,7 +878,7 @@ class QuoteLifecycleTests {
 			var file = new org.springframework.mock.web.MockMultipartFile("files", "客户清单.xlsx",
 					"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", originalBytes);
 			org.springframework.web.multipart.MultipartFile[] files = { file };
-			var ai = new AiQuoteImportService(json, "test-key", "http://127.0.0.1:" + server.getAddress().getPort());
+			var ai = AiLegacyNormalizationFixture.legacy(new AiQuoteImportService(json, "test-key", "http://127.0.0.1:" + server.getAddress().getPort()));
 			var normalized = ai.normalize(files);
 			assertEquals(2, normalized.size());
 			assertEquals("", s(normalized.get(1), "quantity"));
@@ -1439,12 +1574,13 @@ class QuoteLifecycleTests {
 			assertNull(result.get("total"));
 			assertEquals("252", list(result.get("rows")).get(0).get("amount"));
 			assertEquals("pending", list(result.get("rows")).get(1).get("status"));
-			assertEquals("510.0", list(result.get("rows")).get(2).get("amount"));
+			// 3725元/吨板材与3358元/吨、7.5kg黑角铁各只折算材料部分0.92，净面积单价39.9×12㎡。
+			assertEquals("478.8", list(result.get("rows")).get(2).get("amount"));
 			var revised = map(service.detail(quoter, id).get("body"));
 			list(revised.get("rows")).get(1).putAll(obj("excluded", true, "exclude_reason", "测试：范围外产品"));
 			revised.put("revision", service.detail(quoter, id).get("revision"));
 			tx(() -> service.save(quoter, id, revised));
-			assertEquals("762",
+			assertEquals("731",
 					map(tx(() -> service.calculate(quoter, id, rev(service.detail(quoter, id)))).get("result"))
 						.get("total"));
 		}
@@ -1508,7 +1644,7 @@ class QuoteLifecycleTests {
 		body.put("revision", q.get("revision"));
 		tx(() -> service.save(quoter, id, body));
 		var without = map(tx(() -> service.calculate(quoter, id, rev(service.detail(quoter, id)))).get("result"));
-		assertEquals("762", without.get("total"));
+		assertEquals("731", without.get("total")); // 风管478.8＋防火阀252，整单向上取整。
 		q = service.detail(quoter, id);
 		var freightBody = map(q.get("body"));
 		freightBody.put("include_freight", true);
@@ -1533,7 +1669,8 @@ class QuoteLifecycleTests {
 		tx(() -> service.save(quoter, id, manualFreightBody));
 		var withFreightSaved = service.detail(quoter, id);
 		var with = map(tx(() -> service.calculate(quoter, id, rev(withFreightSaved))).get("result"));
-		assertTrue(n(list(with.get("rows")).get(0).get("amount")).compareTo(n("510")) > 0);
+		assertTrue(n(list(with.get("rows")).get(0).get("amount"))
+			.compareTo(n(list(without.get("rows")).get(0).get("amount"))) > 0);
 		assertEquals("252", list(with.get("rows")).get(1).get("amount"));
 		assertEquals("14", map(map(with.get("fees")).get("equipment_freight")).get("amount"));
 		assertEquals(add(n(with.get("subtotal")), n("14")), n(with.get("before_payment_total")));
@@ -1675,7 +1812,7 @@ class QuoteLifecycleTests {
 		tx(() -> service.action(quoter, id, "auto-classify", rev(original)));
 		var computed = tx(() -> service.calculate(quoter, id, rev(service.detail(quoter, id))));
 		var result = map(computed.get("result"));
-		assertEquals("4250", result.get("total"));
+		assertEquals("3990", result.get("total")); // 法兰材料同样乘0.92后，净面积39.9元/㎡×100㎡。
 		assertEquals(0, n(result.get("pending_count")).intValue());
 		var q = service.detail(quoter, id);
 		var body = map(q.get("body"));
@@ -1716,7 +1853,7 @@ class QuoteLifecycleTests {
 	void installationLifecycleValidatesPreservesEntriesAndBlocksChangedCatalogExport() throws Exception {
 		assertThrows(ResponseStatusException.class, () -> service.installationSeed(quoter));
 		var seed = service.installationSeed(leader);
-		assertEquals(56, list(seed.get("projects")).size());
+		assertEquals(58, list(seed.get("projects")).size());
 		String catalogId = s(tx(() -> service.createCatalog(leader, "installation_catalog", seed)), "id");
 		tx(() -> service.catalogAction(leader, catalogId, "publish",
 				rev(repo.find("quote_catalog", catalogId, false))));
@@ -1827,10 +1964,12 @@ class QuoteLifecycleTests {
 		var preview = tx(() -> service.previewReviewImport(quoter, id, changed, "安装待确认校对版.xlsx",
 				n(calculated.get("revision")).intValue()));
 		assertEquals(1, n(preview.get("pending_count")).intValue());
-		assertEquals(0, editedMaterial.compareTo(n(preview.get("material_total"))));
+		assertEquals(0, editedMaterial.subtract(n("100")).compareTo(n(preview.get("material_total"))), "默认仍按数量×单价，保留人工总价需要明确选择");
+		var conflict = list(preview.get("price_conflicts")).get(0);
+		assertEquals(0, editedMaterial.compareTo(n(conflict.get("uploaded_amount"))));
 		assertEquals(0, n(preview.get("installation_total")).signum());
 		var applied = tx(() -> service.applyReviewImport(quoter, id, s(preview, "import_id"),
-				obj("revision", calculated.get("revision"))));
+				obj("revision", calculated.get("revision"), "fixed_amount_rows", List.of(obj("row_id", conflict.get("source_row_id"), "reason", "明确确认材料总价，安装费用仍待核实")))));
 		var result = map(applied.get("result"));
 		assertEquals(1, n(result.get("pending_count")).intValue());
 		assertEquals(0, editedMaterial.compareTo(n(result.get("material_total"))));
@@ -2160,8 +2299,8 @@ class QuoteLifecycleTests {
 		var q = equipmentQuote("mixed_v1", List.of(equipmentRow(), duct, equipmentRow()));
 		var result = map(q.get("result"));
 		assertTrue(yes(result.get("formal_ready")), str(result.get("issues")));
-		assertEquals(0, n("4650").compareTo(n(result.get("total"))));
-		assertEquals(List.of("100", "42.5", "100"),
+		assertEquals(0, n("4390").compareTo(n(result.get("total")))); // 200＋39.9×100＋200。
+		assertEquals(List.of("100", "39.9", "100"),
 				list(result.get("rows")).stream().map(r -> s(r, "unit_price")).toList());
 		for (boolean formal : List.of(false, true)) {
 			var export = tx(() -> service.export(quoter, s(q, "id"),

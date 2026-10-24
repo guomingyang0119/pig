@@ -22,10 +22,10 @@ class DuctPricingEngineTests {
 	 *
 	 */
 	@TestFactory
-	Stream<DynamicTest> matchesPythonV16GoldenCases() throws IOException {
+	Stream<DynamicTest> matchesIndependentCurrentPolicyGoldenCases() throws IOException {
 		Map<String, Object> fixture;
 		try (InputStream stream = new GZIPInputStream(Objects
-			.requireNonNull(getClass().getResourceAsStream("/quotation/duct-installation-v1-golden.json.gz")))) {
+			.requireNonNull(getClass().getResourceAsStream("/quotation/duct-current-policy-20261022-golden.json.gz")))) {
 			fixture = new ObjectMapper().readValue(stream, Map.class);
 		}
 		return list(fixture.get("cases")).stream().map(c -> DynamicTest.dynamicTest(s(c, "name"), () -> {

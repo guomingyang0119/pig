@@ -473,7 +473,7 @@ public final class DuctExportService {
 			.matcher(spec);
 		if (rectangle.find())
 			return rectangle.group(1) + "×" + rectangle.group(2);
-		Matcher round = Pattern.compile("(?:Φ|φ|Ø|ø)\\s*\\d+(?:\\.\\d+)?(?:\\s*(?:mm|毫米))?").matcher(spec);
+		Matcher round = Pattern.compile("[ΦφØøФф∅⌀]\\s*\\d+(?:\\.\\d+)?(?:\\s*(?:mm|毫米))?").matcher(spec);
 		if (round.find())
 			return round.group().replaceAll("\\s+", "");
 		Matcher dn = Pattern.compile("\\bDN\\s*\\d+(?:\\.\\d+)?\\b", Pattern.CASE_INSENSITIVE).matcher(spec);
@@ -488,6 +488,21 @@ public final class DuctExportService {
 	private List<Map<String, Object>> lines(Map<String, Object> body, Map<String, Object> result,
 			boolean installation) {
 		return lines(body, result, installation, false);
+	}
+
+	/** 回导参数预览复用客户校对版的明细和费用行，避免另算安装、法兰或重复计入设备运费。 */
+	List<Map<String, Object>> reviewLines(Map<String, Object> body, Map<String, Object> result) {
+		return customerLines(displayBody(body), result, InstallationPricingEngine.enabled(body), true);
+	}
+
+	private List<Map<String, Object>> customerLines(Map<String, Object> body, Map<String, Object> result,
+			boolean installation, boolean review) {
+		List<Map<String, Object>> lines = new ArrayList<>(lines(body, result, installation, review));
+		var freight = map(map(result.get("fees")).get("equipment_freight"));
+		lines.removeIf(line -> s(line, "process").equals("设备运费") && (yes(freight.get("included_in_rows"))
+				|| yes(line.get("pending")) && !s(freight, "basis").equals("manual_order")));
+		appendEquipmentFreightLine(lines, result, installation, review);
+		return lines;
 	}
 
 	/**
@@ -587,7 +602,7 @@ public final class DuctExportService {
 			remark += "；" + Map
 				.of("common_punch", "含共板法兰打孔费", "common_no_punch", "不含共板法兰打孔费", "actual_meters", "含角钢法兰（按实际米数另列）",
 						"aggregate_meters", "含角钢法兰（按整单实际米数另列）", "round_count", "圆法兰按客户数量另列", "round_area", "圆法兰按面积折算",
-						"per_area", "含角钢法兰")
+						"per_area", "含角钢法兰", "circular_included", "圆形风管已含法兰，不另计法兰费")
 				.get(s(r, "flange_basis"));
 			if (!blank(source.get("remark")))
 				remark += "；" + s(source, "remark");
@@ -755,6 +770,9 @@ public final class DuctExportService {
 		if (duct) {
 			String state = Map.of("semi", "半成品", "finished", "成品")
 				.getOrDefault(s(row, "effective_product_state"), "风管");
+			var inputs = map(row.get("calculation_inputs"));
+			if (yes(inputs.get("circular_finished_included_flange")))
+				return "圆形风管（" + state + "；角钢方形直管基准＋" + s(inputs, "circular_finished_extra") + "元/㎡，已含法兰）";
 			String shape = Map.of("straight", "直管", "irregular", "异形件", "semi_unspecified", "不区分直管/异形件")
 				.getOrDefault(s(row, "selected_shape"), "");
 			String flange = Map.of("common", "共板法兰", "angle", "角钢法兰", "round", "圆法兰")
@@ -1040,11 +1058,7 @@ public final class DuctExportService {
 			if (installation)
 				expandFormalInstallationSheet(sheet);
 			addLogo(wb, sheet);
-			List<Map<String, Object>> lines = new ArrayList<>(lines(body, result, installation, review));
-			var freight = map(map(result.get("fees")).get("equipment_freight"));
-			lines.removeIf(line -> s(line, "process").equals("设备运费") && (yes(freight.get("included_in_rows"))
-					|| yes(line.get("pending")) && !s(freight, "basis").equals("manual_order")));
-			appendEquipmentFreightLine(lines, result, installation, review);
+			List<Map<String, Object>> lines = customerLines(body, result, installation, review);
 			if (lines.isEmpty() || (!review && result.get("total") == null))
 				throw new RuleException("正式报价没有明细或总额未确认");
 			Map<String, Object> equipmentFreightLine = lines.stream()

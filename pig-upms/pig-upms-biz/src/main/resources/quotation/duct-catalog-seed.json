@@ -428,6 +428,7 @@
     "closing_common": "6",
     "closing_angle": "10",
     "closing_round": "20",
+    "circular_finished_extra": "30",
     "closing_0_5_extra": "5",
     "accessory_per_sqm": "2",
     "corner_unit_price": "0.3",

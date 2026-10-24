@@ -532,7 +532,7 @@ class InstallationPricingEngineTests {
 	Stream<DynamicTest> matchesFrozenPythonInstallation() throws IOException {
 		Map<String, Object> fixture;
 		try (var in = new GZIPInputStream(
-				Objects.requireNonNull(getClass().getResourceAsStream("/quotation/installation-golden.json.gz")))) {
+				Objects.requireNonNull(getClass().getResourceAsStream("/quotation/installation-current-policy-20261022-golden.json.gz")))) {
 			fixture = new ObjectMapper().readValue(in, Map.class);
 		}
 		return list(fixture.get("cases")).stream().map(c -> DynamicTest.dynamicTest(s(c, "name"), () -> {

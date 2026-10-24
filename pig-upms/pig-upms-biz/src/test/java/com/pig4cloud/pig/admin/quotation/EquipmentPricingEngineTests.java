@@ -45,8 +45,10 @@ class EquipmentPricingEngineTests {
 		assertEquals("1250", parsed.get("overall_height"));
 		var actual = EquipmentPricingEngine.valveCost("multi_leaf", parsed, catalog);
 		var expected = EquipmentPricingEngine.valveCost("multi_leaf", EquipmentPricingEngine.parseAttributes(
-				obj("name", "正压送风口", "spec", "800×1250", "attributes", obj())), catalog);
+				obj("name", "正压送风口", "spec", "800×1250", "attributes", obj("control", "remote"))), catalog);
 		assertEquals(0, expected.amount().compareTo(actual.amount()));
+		assertEquals(expected.detail().get("components"), actual.detail().get("components"));
+		assertEquals("60", map(actual.detail().get("components")).get("mechanism"));
 		assertEquals(false, actual.detail().get("split"));
 		assertEquals("4", actual.detail().get("blades"));
 		assertEquals("800", actual.detail().get("body_width"));
@@ -129,7 +131,7 @@ class EquipmentPricingEngineTests {
 		assertEquals("electric_control",
 				EquipmentPricingEngine.classify(obj("name", "电动蝶阀", "attributes", obj())));
 		assertEquals("manual", EquipmentPricingEngine.classify(obj("name", "蝶阀", "attributes", obj())));
-		assertEquals("pressure_relief",
+		assertEquals("electric_control",
 				EquipmentPricingEngine.classify(obj("name", "电动泄压阀", "attributes", obj())));
 		assertEquals("electric_fire",
 				EquipmentPricingEngine.classify(obj("name", "电动防火阀", "attributes", obj())));
@@ -324,7 +326,7 @@ class EquipmentPricingEngineTests {
 	Stream<DynamicTest> matchesFrozenPythonEquipmentResults() throws IOException {
 		Map<String, Object> fixture;
 		try (InputStream in = new GZIPInputStream(Objects
-			.requireNonNull(getClass().getResourceAsStream("/quotation/equipment-installation-v1-golden.json.gz")))) {
+			.requireNonNull(getClass().getResourceAsStream("/quotation/equipment-current-policy-20261023-golden.json.gz")))) {
 			fixture = new ObjectMapper().readValue(in, Map.class);
 		}
 		var cases = list(fixture.get("cases"));
@@ -335,7 +337,9 @@ class EquipmentPricingEngineTests {
 			var q = map(c.get("quote"));
 			var resources = list(map(fixture.get("catalogs")).get(s(c, "resources_key")));
 			var expected = frozenExpectedWithConfirmedSplice(c, cases);
-			for (int i = 0; i < list(expected.get("rows")).size(); i++) {
+			// 新64项独立Python预期已物化长短边、圆阀1.3及本轮供货1.2，不再被旧转换覆盖。
+			boolean currentStainlessPolicy = s(c, "stainless_supply_policy").equals("20261023");
+			for (int i = 0; !currentStainlessPolicy && i < list(expected.get("rows")).size(); i++) {
 				var correction = map(dimensions.get(s(c, "name") + ":" + i));
 				if (correction.isEmpty()) continue;
 				var corrected = list(expected.get("rows")).get(i);
@@ -349,7 +353,7 @@ class EquipmentPricingEngineTests {
 			}
 			applyConfirmedValveMechanisms(q, resources, expected);
 			applyConfirmedValveSplices(q, resources, expected);
-			applyConfirmedRoundValveCost(q, resources, expected);
+			if (!currentStainlessPolicy) applyConfirmedRoundValveCost(q, resources, expected);
 			applyIndependentGravityIndicator(q, resources, expected);
 			applyConfirmedFanAliases(s(c, "name"), q, resources, expected);
 			var result = s(q, "pricing_mode").equals("mixed_v1") ? engine.mixed(q, resources, map(c.get("policy")))
@@ -573,17 +577,18 @@ class EquipmentPricingEngineTests {
 				"rounding_difference", total.subtract(paymentTotal).toPlainString()));
 	}
 
-	/** 自垂由借用单层指标改为独立取价，只转换冻结矩阵中的四个普通自垂用例。 */
+	/** 普通自垂及自垂带阀均独立取价，只转换冻结矩阵中对应的八个旧共用用例。 */
 	private static void applyIndependentGravityIndicator(Map<String, Object> quote,
 			List<Map<String, Object>> resources, Map<String, Object> expected) {
 		var rows = list(expected.get("rows"));
-		if (rows.size() != 1 || !s(map(rows.get(0).get("detail")), "louver_type").equals("gravity")) return;
+		if (rows.size() != 1 || !Set.of("gravity", "gravity_valve").contains(s(map(rows.get(0).get("detail")), "louver_type"))) return;
 		assertEquals("equipment_v1", quote.get("pricing_mode"));
 		var row = rows.get(0);
 		var detail = map(row.get("detail"));
 		var catalog = resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog"))
 			.map(r -> map(r.get("body"))).findFirst().orElseThrow();
-		var values = (List<?>) map(catalog.get("louvers")).get("gravity");
+		String type = s(detail, "louver_type");
+		var values = (List<?>) map(catalog.get("louvers")).get(type);
 		var rates = map(catalog.get("rates"));
 		var options = map(quote.get("equipment_options"));
 		assertEquals(false, options.get("include_freight"));
@@ -596,7 +601,7 @@ class EquipmentPricingEngineTests {
 		BigDecimal unit = numerator.divide(denominator, 0, RoundingMode.CEILING);
 		BigDecimal amount = unit.multiply(quantity).setScale(0, RoundingMode.CEILING);
 		String supply = frozenQuotient(numerator, denominator);
-		detail.put("pricing_louver_type", "gravity");
+		detail.put("pricing_louver_type", type);
 		row.putAll(obj("unit_cost", cost.toPlainString(), "supply_unit_unrounded", supply,
 			"supply_amount_unrounded", frozenQuotient(numerator.multiply(quantity), denominator),
 			"unit_price", unit.toPlainString(), "amount", amount.toPlainString(), "body_amount", amount.toPlainString()));

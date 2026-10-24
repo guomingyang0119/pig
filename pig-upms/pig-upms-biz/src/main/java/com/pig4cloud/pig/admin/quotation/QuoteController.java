@@ -138,6 +138,20 @@ public class QuoteController {
 		return R.ok(service.productRules(actor()));
 	}
 
+	/** 首页待发布提醒只读取数量，避免传输全量规则正文。 */
+	@GetMapping("/product-rules/summary")
+	@HasPermission("quote_manage")
+	public R<?> productRuleSummary() {
+		return R.ok(service.productRuleSummary(actor()));
+	}
+
+	/** 发布后的批量应用先预览实际命中行，不写入清单或触发计价。 */
+	@PostMapping("/product-rules/{id}/matches")
+	@HasPermission("quote_view")
+	public R<?> productRuleMatches(@PathVariable String id, @RequestBody Map<String, Object> data) {
+		return R.ok(service.previewProductRuleApplication(actor(), id, data));
+	}
+
 	/**
 	 * 根据产品行返回可用规则建议、模板与系数，不直接改变报价。
 	 */
@@ -292,6 +306,18 @@ public class QuoteController {
 		return R.ok(service.detail(actor(), id));
 	}
 
+	@GetMapping("/quotes/{id}/workbench-input")
+	@HasPermission("quote_view")
+	public R<?> compactWorkbenchDetail(@PathVariable String id) {
+		return R.ok(service.compactWorkbenchDetail(actor(), id));
+	}
+
+	@GetMapping("/quotes/{id}/rows/{rowId}/input")
+	@HasPermission("quote_view")
+	public R<?> rowInput(@PathVariable String id, @PathVariable String rowId, @RequestParam int revision) {
+		return R.ok(service.rowInput(actor(), id, rowId, revision));
+	}
+
 	/**
 	 * 根据手工输入或已解析清单建立报价草稿，并保留原始行来源。
 	 */
@@ -339,6 +365,12 @@ public class QuoteController {
 		return R.ok(service.save(actor(), id, data));
 	}
 
+	@PatchMapping("/quotes/{id}")
+	@HasPermission("quote_edit")
+	public R<?> patch(@PathVariable String id, @RequestBody Map<String, Object> data) {
+		return R.ok(service.patch(actor(), id, data));
+	}
+
 	/**
 	 * 在当前修订号上试算并保存结果，返回待确认项与可否正式报价的状态。
 	 */
@@ -346,6 +378,27 @@ public class QuoteController {
 	@HasPermission("quote_edit")
 	public R<?> calculate(@PathVariable String id, @RequestBody Map<String, Object> data) {
 		return R.ok(service.calculate(actor(), id, data));
+	}
+
+	/** 保留完整编辑输入，只传输列表所需的结果；逐步计算由行接口读取。 */
+	@GetMapping("/quotes/{id}/workbench")
+	@HasPermission("quote_view")
+	public R<?> workbench(@PathVariable String id) {
+		return R.ok(service.workbenchDetail(actor(), id));
+	}
+
+	/** 修订及行标识绑定的完整计算明细，不改变报价、审计或列表摘要。 */
+	@GetMapping("/quotes/{id}/rows/{rowId}/calculation")
+	@HasPermission("quote_view")
+	public R<?> rowCalculation(@PathVariable String id, @PathVariable String rowId, @RequestParam int revision) {
+		return R.ok(service.rowCalculation(actor(), id, rowId, revision));
+	}
+
+	/** 汇总当前已保存AI草稿的全部核验问题，返回标准行及客户原表位置。 */
+	@PostMapping("/quotes/{id}/ai-review-preview")
+	@HasPermission("quote_edit")
+	public R<?> aiReviewPreview(@PathVariable String id, @RequestBody Map<String, Object> data) {
+		return R.ok(service.aiReviewPreview(actor(), id, data));
 	}
 
 	/**
@@ -435,6 +488,21 @@ public class QuoteController {
 	@HasPermission("quote_manage")
 	public R<?> audit() {
 		return R.ok(service.audit(actor()));
+	}
+
+	@GetMapping("/audit/page")
+	@HasPermission("quote_manage")
+	public R<?> auditPage(@RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size,
+			@RequestParam(defaultValue = "") String actor, @RequestParam(defaultValue = "") String target,
+			@RequestParam(defaultValue = "") String action, @RequestParam(defaultValue = "") String startDate,
+			@RequestParam(defaultValue = "") String endDate) {
+		return R.ok(service.auditPage(actor(), page, size, actor, target, action, startDate, endDate));
+	}
+
+	@GetMapping("/audit/{id}")
+	@HasPermission("quote_manage")
+	public R<?> auditDetail(@PathVariable String id) {
+		return R.ok(service.auditDetail(actor(), id));
 	}
 
 	/**

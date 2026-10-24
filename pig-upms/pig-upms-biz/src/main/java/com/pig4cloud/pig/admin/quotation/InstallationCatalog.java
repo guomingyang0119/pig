@@ -13,6 +13,32 @@ public final class InstallationCatalog {
 	// 贵州、四川、云南、广西共用四地区项目；陕西项目和辅材价格独立匹配。
 	public static final Set<String> FOUR_REGIONS = Set.of("贵州", "四川", "云南", "广西");
 
+	/** 新版本把原设备指标中的全国包裹安装价迁入普通安装项目，保留已修改的价格。 */
+	static void supplementFireWrap(Map<String, Object> body, Map<String, Object> equipment) {
+		var source = new LinkedHashMap<>(equipment);
+		FireWrapSales.supplement(source);
+		var data = map(source.get("fire_wrap_sales"));
+		var projects = list(body.get("projects"));
+		for (String group : List.of("glass", "board")) {
+			String id = "national_wrap_" + group;
+			if (projects.stream().anyMatch(p -> s(p, "id").equals(id))) continue;
+			projects.add(obj("id", id, "name", group.equals("glass") ? "玻璃棉、岩棉包裹安装（全国统一）" : "硅酸盐板、硅酸钙板包裹安装（全国统一）",
+				"regions", new ArrayList<>(QuoteRegion.PROVINCES), "kind", "wrap", "unit", "㎡",
+				"price", map(data.get("installation_prices")).get(group), "auxiliary_type", "",
+				"source", s(data, "source") + " · " + s(map(data.get("installation_sources")), group),
+				"note", "外购防火包裹自动取价；组合逐项相加，立方按各材料自身厚度系数换算，不计本表软包、硬包辅材"));
+		}
+		body.put("projects", projects);
+	}
+
+	static Map<String, Object> fireWrapPrices(Map<String, Object> body) {
+		var prices = obj();
+		for (String group : List.of("glass", "board"))
+			list(body.get("projects")).stream().filter(p -> s(p, "id").equals("national_wrap_" + group)).findFirst()
+				.ifPresent(p -> prices.put(group, p.get("price")));
+		return prices;
+	}
+
 	/**
 	 * 发布前核验项目编号、来源、单位、地区及未税销售价。
 	 * 含税安装系数固定 1.01；风机三档价与固定单价二选一，陕西三种辅材必须各有唯一项目。
@@ -29,8 +55,15 @@ public final class InstallationCatalog {
 		var projects = list(body.get("projects"));
 		if (projects.isEmpty())
 			throw new RuleException("请配置安装项目");
+		var wrapPrices = fireWrapPrices(body);
+		if (!wrapPrices.isEmpty() && (wrapPrices.size() != 2 || wrapPrices.values().stream().anyMatch(QuoteData::blank)))
+			throw new RuleException("全国防火包裹安装销售价必须同时配置玻璃棉/岩棉及板材两项");
 		Set<String> ids = new HashSet<>();
 		for (var p : projects) {
+			if (Set.of("national_wrap_glass", "national_wrap_board").contains(s(p, "id"))
+					&& (!s(p, "kind").equals("wrap") || !s(p, "unit").equals("㎡") || p.get("power_prices") != null
+						|| !(p.get("regions") instanceof List<?> regions) || !new HashSet<>(regions).equals(new HashSet<>(QuoteRegion.PROVINCES))))
+				throw new RuleException("全国防火包裹安装项目必须按平方米配置并适用于全国");
 			if (blank(p.get("id")) || !ids.add(s(p, "id")))
 				throw new RuleException("安装项目编号缺失或重复");
 			if (blank(p.get("name")) || blank(p.get("source")) || !Set.of("㎡", "台", "个", "套").contains(s(p, "unit")))

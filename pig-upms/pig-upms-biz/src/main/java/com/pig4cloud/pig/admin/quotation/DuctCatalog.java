@@ -35,7 +35,7 @@ public final class DuctCatalog {
 	// 历史指标兼容项；未配置时业务引擎会对运费、圆法兰等项目使用各自明确的回退值。
 	public static final Set<String> OPTIONAL_RATES = Set.of("freight_per_sqm", "round_flange_pi",
 			"round_flange_untaxed", "round_flange_taxed", "net_round", "closing_round", "galvanized_1_5_unspecified",
-			"common_punch_small");
+			"common_punch_small", "circular_finished_extra");
 
 	/**
 	 * 已确认的八种整单付款方案：不含安装五种、含安装三种。付款系数由整单汇总阶段应用。
@@ -88,6 +88,8 @@ public final class DuctCatalog {
 		}
 		if (!"guizhou".equals(body.getOrDefault("company_id", "guizhou")))
 			throw new RuleException("首期仅支持贵州报价");
+		if (body.containsKey("price_regions") && !DuctRegionalPrices.REGIONS.equals(body.get("price_regions")))
+			throw new RuleException("风管材料吨价地区配置缺失或未识别");
 		Map<String, Object> rates = map(body.get("rates")), expressions = map(body.get("expressions"));
 		Set<String> allowedRates = new HashSet<>(REQUIRED_RATES);
 		allowedRates.addAll(OPTIONAL_RATES);
@@ -109,7 +111,7 @@ public final class DuctCatalog {
 			if (!MATERIALS.contains(s(item, "material")))
 				throw new RuleException("材料类型未识别");
 			String key = s(item, "material") + ":" + positive(item.get("thickness"), "材料厚度").stripTrailingZeros();
-			positive(item.get("ton_price"), "吨价");
+			DuctRegionalPrices.validate(body, item);
 			if (!seen.add(key))
 				throw new RuleException("材料规格重复，无法唯一取价");
 		}
@@ -121,11 +123,12 @@ public final class DuctCatalog {
 				throw new RuleException("角钢法兰材质或规格未识别");
 			String key = s(item, "material") + ":" + s(item, "size") + ":"
 					+ positive(item.getOrDefault("grade", item.get("kg_per_bar")), "计算档位").stripTrailingZeros();
-			positive(item.get("ton_price"), "吨价");
+			DuctRegionalPrices.validate(body, item);
 			positive(item.get("processing_per_m"), "加工费");
 			if (!seen.add(key))
 				throw new RuleException("角钢法兰规格重复，无法唯一取价");
 		}
+		DuctRegionalPrices.validatePurchased(body);
 		// 自定义付款系数可以调价，已确认编码、名称和含安装适用场景保持固定。
 		if (body.containsKey("payment_terms")) {
 			List<Map<String, Object>> terms = list(body.get("payment_terms"));

@@ -16,7 +16,7 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 public final class InstallationPricingEngine {
 
 	// 安装规则版本用于历史计算追溯，改变结算口径时需重新试算。
-	public static final String VERSION = "installation-v8";
+	public static final String VERSION = "installation-v14";
 	static final BigDecimal TAX_FACTOR = n("1.01");
 
 	// 安装支持的计量单位；只有已确认的少量产品允许等量使用“台/个/套”，其余不能自动换算。
@@ -187,6 +187,26 @@ public final class InstallationPricingEngine {
 
 	/** 无安装个数的消声弯头按整单法兰口径计价；整单同时出现两种法兰时采用角钢法兰。 */
 	private static String silencerElbowAreaProject(Map<String, Object> row, Map<String, Object> quote, boolean shaanxi) {
+		Set<String> flanges = quote instanceof CalculationQuote context ? context.flanges() : orderFlanges(quote);
+		String selected = flanges.contains("angle") ? "angle" : flanges.contains("common") ? "common" : flange(row);
+		if (selected.equals("angle"))
+			return shaanxi ? "sx_4" : "four_4";
+		if (selected.equals("common"))
+			return shaanxi ? "sx_3" : "four_3";
+		return null;
+	}
+
+	/** 仅内部计算持有此类型，客户端字段不能冒充已经聚合的法兰口径。 */
+	private static final class CalculationQuote extends LinkedHashMap<String, Object> {
+		private Set<String> flanges;
+		CalculationQuote(Map<String, Object> quote) { super(quote); }
+		Set<String> flanges() {
+			if (flanges == null) flanges = orderFlanges(this);
+			return flanges;
+		}
+	}
+
+	private static Set<String> orderFlanges(Map<String, Object> quote) {
 		Set<String> flanges = new HashSet<>();
 		// 单行规则试算只借用全单法兰识别上下文，不把这些行放入安装金额汇总。
 		var context = quote.containsKey("_installation_context_rows") ? list(quote.get("_installation_context_rows")) : list(quote.get("rows"));
@@ -198,12 +218,7 @@ public final class InstallationPricingEngine {
 		String defaultFlange = str(map(quote.get("duct_options")).get("flange"));
 		if (Set.of("common", "angle").contains(defaultFlange))
 			flanges.add(defaultFlange);
-		String selected = flanges.contains("angle") ? "angle" : flanges.contains("common") ? "common" : flange(row);
-		if (selected.equals("angle"))
-			return shaanxi ? "sx_4" : "four_4";
-		if (selected.equals("common"))
-			return shaanxi ? "sx_3" : "four_3";
-		return null;
+		return flanges;
 	}
 
 	// 按壁式、方形、管道/油烟及消防送排风用途区分地区项目，陕西信息不足时返回待选择。
@@ -303,6 +318,16 @@ public final class InstallationPricingEngine {
 				&& !contains(name, "控制柜", "控制箱") && FanModelNames.outsourced(name + " " + s(row, "spec"));
 		if (fan && name.contains("百叶"))
 			return fanProject(row, sx);
+		// 安装按实际风口类型匹配，不能让别名写法或材料计价口径改变施工项目。
+		String actualLouverType = "";
+		if (equipmentKind.equals("louver")) {
+			var attributes = EquipmentReview.flatAttributes(row);
+			EquipmentReview.normalizeInputs(attributes);
+			actualLouverType = s(EquipmentReview.louver(row, attributes), "louver_type");
+		}
+		// 带阀是风口附带控制开关，自垂产品仍按自垂百叶安装，不另计风阀安装。
+		if (Set.of("gravity", "gravity_valve").contains(actualLouverType))
+			return sx ? "sx_27" : "four_19";
 		if (name.contains("防雨百叶"))
 			return rainLouverProject(row, sx);
 		if (contains(name, "消声弯头", "防雨弯头"))
@@ -318,7 +343,7 @@ public final class InstallationPricingEngine {
 				return "sx_32";
 			if (contains(name, "板式排烟口", "远程多叶送风口"))
 				return "sx_33";
-			if (contains(name, "多叶排烟口", "多叶排烟风口", "电动百叶风口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "电动防火风口"))
+			if (contains(name, "多叶排烟口", "多叶排烟风口", "电动百叶风口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "电动防火风口", "常闭排烟补风口"))
 				return "sx_31";
 			if (name.contains("防火风口"))
 				return contains(name, "70", "弱电", "常开") ? "sx_29" : "sx_26";
@@ -334,11 +359,14 @@ public final class InstallationPricingEngine {
 		else {
 			if (contains(name, "板式排烟口", "板式排烟风口", "多叶排烟口"))
 				return "four_20";
-			if (contains(name, "多叶排烟风口", "电动百叶风口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "组合送风口"))
+			if (contains(name, "多叶排烟风口", "电动百叶风口", "多叶送风口", "多叶加压送风口", "正压送风口", "加压送风口", "组合送风口", "常闭排烟补风口"))
 				return "four_20";
 			if (name.contains("防火风口"))
 				return "four_22";
 		}
+		if (Set.of("single", "single_valve", "single_mesh", "double", "double_valve", "double_mesh", "abs_single", "abs_double",
+				"mesh_outlet", "egg_grid", "egg_grid_mesh", "egg_grid_valve").contains(actualLouverType))
+			return sx ? "sx_25" : "four_18";
 		if (contains(name, "防火阀", "排烟阀", "调节阀", "止回阀", "风阀", "电动阀", "蝶阀")) {
 			if (!sx)
 				return "four_16";
@@ -347,9 +375,6 @@ public final class InstallationPricingEngine {
 		}
 		if (((name.contains("单层") || name.contains("双层")) && name.contains("百叶")) || name.contains("带阀风口"))
 			return sx ? "sx_25" : "four_18";
-		// 带阀只表示风口附带控制开关，不另计风阀安装；自垂百叶仍按自垂百叶项目计价。
-		if (name.contains("自垂百叶"))
-			return sx ? "sx_27" : "four_19";
 		// 这些名称包含执行机构或复合配置，最新版安装表没有给出四地区叠加关系。
 		if (contains(name, "防雨", "防火风口", "多叶", "远程", "远控", "不燃", "电动", "自动", "带阀"))
 			return null;
@@ -605,6 +630,7 @@ public final class InstallationPricingEngine {
 				new ArrayList<>());
 		if (!enabled(quote))
 			return new Calculation(empty, new ArrayList<>());
+		quote = new CalculationQuote(quote);
 		if (!list(quote.get("rows")).isEmpty() && list(quote.get("rows")).stream().allMatch(r -> yes(r.get("excluded")))
 				&& list(quote.get("installation_items")).isEmpty()) {
 			List<Map<String, Object>> lines = new ArrayList<>();
@@ -637,10 +663,19 @@ public final class InstallationPricingEngine {
 		List<Map<String, Object>> lines = new ArrayList<>();
 		List<String> issues = new ArrayList<>();
 		var rows = list(quote.get("rows"));
+		var wrapCatalogs = EquipmentCatalog.active(resources, day);
+		var installationRules = InstallationProductRules.preparation(resources, day);
 		for (int i = 0; i < rows.size(); i++) {
-			var prepared = InstallationProductRules.prepare(rows.get(i), quote, resources, day);
-			var line = ruleLine(prepared, map(rows.get(i).get("installation")), quote, catalog,
-					i < calculatedRows.size() ? calculatedRows.get(i) : obj());
+			var prepared = installationRules.prepare(rows.get(i), quote);
+			var entry = map(rows.get(i).get("installation"));
+			Map<String, Object> line;
+			if (FireWrapSales.applies(rows.get(i)) && (!InstallationCatalog.fireWrapPrices(catalog).isEmpty() || wrapCatalogs.size() == 1 && map(wrapCatalogs.get(0).get("body")).containsKey("fire_wrap_sales"))
+					&& !yes(rows.get(i).get("excluded")) && !yes(entry.get("excluded"))
+					&& !prepared.containsKey("_installation_rule_resource") && ProductRuleInstallation.profile(prepared).isEmpty()) {
+				var wrapResource = wrapCatalogs.size() == 1 ? wrapCatalogs.get(0) : obj();
+				line = FireWrapSales.installationLine(rows.get(i), entry, map(wrapResource.get("body")), wrapResource, catalog);
+			}
+			else line = ruleLine(prepared, entry, quote, catalog, i < calculatedRows.size() ? calculatedRows.get(i) : obj());
 			if (prepared.containsKey("_installation_rule_resource")) line.put("installation_rule", prepared.get("_installation_rule_resource"));
 			line.put("row_index", i);
 			lines.add(line);
@@ -651,7 +686,12 @@ public final class InstallationPricingEngine {
 			var e = extra.get(i);
 			var row = obj("name", s(e, "name"), "category", s(e, "category"), "unit", s(e, "unit"), "quantity",
 					s(e, "quantity"));
-			var line = line(row, e, quote, catalog, obj());
+			var wrapResource = wrapCatalogs.size() == 1 ? wrapCatalogs.get(0) : obj();
+			var line = FireWrapSales.applies(row) && !yes(e.get("excluded"))
+					&& (blank(e.get("project_id")) && blank(e.get("unit_price"))
+							|| Set.of("national_wrap_glass", "national_wrap_board").contains(s(e, "project_id")))
+				? FireWrapSales.installationLine(row, e, map(wrapResource.get("body")), wrapResource, catalog)
+				: line(row, e, quote, catalog, obj());
 			line.put("extra_index", i);
 			lines.add(line);
 		}
