@@ -24,7 +24,7 @@ public final class DuctImportService {
 	public static final int MAX_BYTES = 24 * 1024 * 1024, MAX_ROWS = 10000, MAX_COLUMNS = 80;
 
 	// 可导入的独立业务参数白名单，包含风管工艺、设备工况及需人工核实的附阀参数。
-	public static final List<String> ATTRIBUTES = List.of("model", "material", "flange", "area_basis", "product_state",
+	public static final List<String> ATTRIBUTES = List.of("model", "size", "material", "flange", "area_basis", "product_state",
 			"shape", "flange_material", "flange_size", "flange_grade", "flange_weight", "flange_meters", "diameter",
 			"round_flange_count", "width", "height", "length", "thickness", "power", "airflow", "pressure",
 			"pressure_type", "speed", "airflow_low", "pressure_low", "position_tag", "dimension_expression", "panel_height", "equipment_kind", "louver_type", "pricing_louver_type", "recognition_evidence",
@@ -475,6 +475,7 @@ public final class DuctImportService {
 				Map.entry("quantity", Set.of("数量", "设备数量", "产品数量", "材料数量")), Map.entry("unit", Set.of("单位", "计量单位")),
 				Map.entry("remark", Set.of("备注")), Map.entry("engineering_quantity", Set.of("工程量", "总面积", "清单总量")),
 				Map.entry("airflow", Set.of("风量", "风量(m³/h)", "风量(m3/h)")),
+				Map.entry("size", Set.of("机号", "风机机号", "需求机号")),
 				Map.entry("pressure", Set.of("风压", "风压(Pa)", "全压", "全压(Pa)", "风压(kPa)", "全压(kPa)")),
 				Map.entry("power", Set.of("功率", "功率(kW)", "电机功率(kW)", "功率(W)", "电机功率(W)")), Map.entry("model", Set.of("型号", "设备型号", "尺寸")),
 				Map.entry("width", Set.of("宽", "宽度", "宽(mm)", "宽度(mm)")),
@@ -619,10 +620,20 @@ public final class DuctImportService {
 		String spec = get(row, mapping, "spec").replaceAll("\\s+", ""), unit = get(row, mapping, "unit").replaceAll("\\s+", "");
 		boolean noQuantity = get(row, mapping, "quantity").isBlank() && get(row, mapping, "engineering_quantity").isBlank();
 		boolean noParameters = ATTRIBUTES.stream().allMatch(key -> get(row, mapping, key).isBlank());
+		// “备注”独占一格、相邻合并格放“报价说明”的页脚，不应因说明落在规格列而生成无名产品。
+		// 真实产品名、独立单位/数量或参数仍保留，不能只凭备注中出现商业文字就排除产品。
+		String commercial = "(?s)^(?:报价说明|报价要求|商务说明|商务要求|供货说明|价格说明)[:：].+";
+		if (noQuantity && unit.isEmpty() && noParameters
+				&& (name.isEmpty() || name.matches("(?:备注|说明|附注)[:：]?") || name.matches(commercial))
+				&& distinct.stream().map(value -> value.replaceAll("\\s+", "")).anyMatch(value -> value.matches("(?:备注|说明|附注)[:：]?"))
+				&& distinct.stream().map(value -> value.replaceAll("\\s+", "")).anyMatch(value -> value.matches(commercial)))
+			return "note_or_total";
 		boolean titleLayout = noQuantity && unit.isEmpty() && noParameters && (spec.isEmpty() || spec.equals(name));
 		if (titleLayout && EngineeringImportReview.chapter(name)) return "section";
 		if (titleLayout && name.equals("通风主材小计")) return "note_or_total";
 		String first = cells(row).stream().map(QuoteData::str).filter(v -> !v.isBlank()).findFirst().orElse("").replaceAll("\\s+", "");
+		if (noQuantity && unit.isEmpty() && noParameters && (name.isEmpty() || Set.of("备注","说明","附注").contains(name)) && Set.of("备注","说明","附注").contains(first)
+				&& spec.matches("(?s)^(?:报价说明|报价要求|供货说明|说明)[：:].*")) return "note_or_total";
 		Set<String> chapterTitles = Set.of("氢气单元", "中试验证单元", "氮气及压缩空气单元", "采暖通风", "自控仪表", "工艺管道",
 				"空调类", "风机类", "制氢厂房暖通设备", "除盐水站暖通设备", "给水及消防泵站暖通设备", "危废暂存间暖通设备",
 				"给水及消防泵站", "碳钢管", "地管阀门", "生产给水系统(iw)", "生活水管线(ptw)", "阻尼器", "通风防排烟系统安装工程");
@@ -672,8 +683,10 @@ public final class DuctImportService {
 	 */
 	public static void autoClassifyRow(Map<String, Object> row) {
 		String category = s(row, "category");
-		String description = s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark");
-		if (category.isEmpty() || category.equals("风管")) {
+		var effective = RemarkProductSource.effective(row);
+		boolean remarkPriority = effective != row || RemarkProductSource.active(row);
+		String description = s(effective, "name") + " " + s(effective, "spec") + " " + s(effective, "remark");
+		if (category.isEmpty() || category.equals("风管") || remarkPriority) {
 			var candidate = new LinkedHashMap<>(row);
 			candidate.put("category", "");
 			String kind = EquipmentPricingEngine.classify(candidate);
@@ -683,7 +696,7 @@ public final class DuctImportService {
 									? "消声设备"
 									: kind.equals("purchased") ? "外购设备" : description.contains("风管") ? "风管" : "";
 		}
-		if (s(row, "category").isEmpty() || s(row, "category").equals("风管"))
+		if (s(row, "category").isEmpty() || s(row, "category").equals("风管") || remarkPriority)
 			row.put("category", category);
 		if (!QuoteInputChanges.quantityCleared(row, "engineering_quantity") && blank(row.get("engineering_quantity")) && !blank(row.get("quantity"))
 				&& Set.of("㎡", "m2", "m²", "平方米", "平方").contains(s(row, "unit")))
@@ -703,7 +716,7 @@ public final class DuctImportService {
 				|| s(row, "pricing_mode").equals("manual_v1") || row.get("product_rule") != null || !blank(row.get("product_rule_family"))) return;
 		String kind = EquipmentPricingEngine.classifySource(row);
 		if (kind.isBlank() || kind.equals(s(attributes, "equipment_kind"))) return;
-		if (blank(attributes.get("recognition_issue")))
+		if (blank(attributes.get("recognition_issue")) && RemarkProductSource.evidence(row).isBlank())
 			attributes.put("recognition_issue", "自动设备类型与原文主产品不一致，已按原文识别为" + EquipmentReview.KIND_LABELS.getOrDefault(kind, kind) + "；请核对后确认来源");
 		attributes.put("equipment_kind", kind);
 		attributes.put("equipment_kind_source", "rule");

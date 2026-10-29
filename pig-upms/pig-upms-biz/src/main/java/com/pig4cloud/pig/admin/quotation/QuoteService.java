@@ -106,22 +106,58 @@ public class QuoteService {
 		Boolean freight = freightIncluded(body);
 		if (freight == null)
 			throw new RuleException("请统一选择整单是否含运费后重新试算");
-		// 先解析生效的产品别名/组合规则，再让原生计价引擎处理实际产品和结算。
+		// 本单及人工指定优先；未指定的行先运行内置逻辑，只有明确能力缺口才尝试自动补缺。
 		applyFreight(body, freight);
 		var rulePreparation = ProductRuleCatalog.preparation(resources, validationDay);
-		var rows = list(body.get("rows")).stream()
+		var sourceRows = list(body.get("rows"));
+		var rows = new ArrayList<>(sourceRows.stream()
 			.map(rulePreparation::prepare)
-			.toList();
+			.toList());
 		enableProductRuleMode(body, rows);
 		QuoteRegion.sync(body);
 		Map<String, Object> prepared = repo.object(repo.json(body));
 		prepared.put("rows", rows);
-		Map<String, Object> result = switch (s(body, "pricing_mode")) {
-			case "equipment_v1" -> equipment.calculate(prepared, resources, policy);
-			case "mixed_v1" -> equipment.mixed(prepared, resources, policy);
-			default -> engine.calculate(prepared, resources, policy);
-		};
+		Map<String, Object> result = calculatePrepared(prepared, resources, policy);
+		var builtinFailures = new LinkedHashMap<Integer, Map<String, Object>>();
+		var skippedAutomaticRules = new LinkedHashMap<Integer, List<Map<String, Object>>>();
+		var firstRows = list(result.get("rows"));
+		for (int i = 0; i < rows.size(); i++) {
+			boolean rangeCostOnly = FallbackEligibility.allowsRangeCost(sourceRows.get(i), firstRows.get(i));
+			if (!rangeCostOnly && !FallbackEligibility.allows(sourceRows.get(i), firstRows.get(i))) continue;
+			var candidate = rangeCostOnly ? rulePreparation.prepareAutomaticRangeCost(sourceRows.get(i)) : rulePreparation.prepareAutomatic(sourceRows.get(i));
+			var skipped = list(candidate.get("_product_rule_skipped"));
+			if (!skipped.isEmpty()) skippedAutomaticRules.put(i, skipped);
+			if (map(candidate.get("_product_rule_resource")).isEmpty() && s(candidate, "product_rule_issue").isBlank()) continue;
+			rows.set(i, candidate);
+			builtinFailures.put(i, FallbackEligibility.failure(firstRows.get(i)));
+		}
+		if (!builtinFailures.isEmpty()) {
+			// 只把可补缺的行替换成候选，再用完整最终行集统一结算运费、安装与付款，避免重复计费。
+			enableProductRuleMode(body, rows);
+			QuoteRegion.sync(body);
+			prepared = repo.object(repo.json(body));
+			prepared.put("rows", rows);
+			result = calculatePrepared(prepared, resources, policy);
+			var finalRows = list(result.get("rows"));
+			for (var entry : builtinFailures.entrySet()) {
+				var output = finalRows.get(entry.getKey());
+				output.put("builtin_failure", entry.getValue());
+				output.put("pricing_selection", "automatic_fallback");
+				var detail = new LinkedHashMap<>(map(output.get("detail")));
+				String note = "内置逻辑未覆盖，已尝试自动补缺：" + s(entry.getValue(), "reason");
+				detail.put("pricing_note", s(detail, "pricing_note").isBlank() ? note : s(detail, "pricing_note") + "；" + note);
+				output.put("detail", detail);
+			}
+		}
 		var resultRows = list(result.get("rows"));
+		for (var entry : skippedAutomaticRules.entrySet()) {
+			var output = resultRows.get(entry.getKey());
+			var detail = new LinkedHashMap<>(map(output.get("detail")));
+			detail.put("skipped_product_rules", entry.getValue());
+			String note = "自动补缺规则未采用：" + String.join("；", entry.getValue().stream().map(rule -> s(rule, "reason")).toList());
+			detail.put("pricing_note", s(detail, "pricing_note").isBlank() ? note : s(detail, "pricing_note") + "；" + note);
+			output.put("detail", detail);
+		}
 		for (int i = 0; i < rows.size(); i++)
 			if (rows.get(i).containsKey("_product_rule_resource"))
 				resultRows.get(i).put("product_rule", rows.get(i).get("_product_rule_resource"));
@@ -142,6 +178,16 @@ public class QuoteService {
 		if (validationDay.equals(validationDate()))
 			result.put(QuoteValidation.RECEIPT, QuoteValidation.issue(body, result, new QuoteValidation.Dependencies(resources, validationDay)));
 		return result;
+	}
+
+	/** 两轮试算使用相同整单入口；仅最终一轮结果会落库或签发核验凭据。 */
+	private Map<String, Object> calculatePrepared(Map<String, Object> prepared, List<Map<String, Object>> resources,
+			Map<String, Object> policy) {
+		return switch (s(prepared, "pricing_mode")) {
+			case "equipment_v1" -> equipment.calculate(prepared, resources, policy);
+			case "mixed_v1" -> equipment.mixed(prepared, resources, policy);
+			default -> engine.calculate(prepared, resources, policy);
+		};
 	}
 
 	LocalDate validationDate() { return LocalDate.now(); }
@@ -258,7 +304,23 @@ public class QuoteService {
 		List<Map<String,Object>> preparedRows() {
 			if(prepared==null) {
 				var preparation=ProductRuleCatalog.preparation(resources,date);
-				prepared=list(body.get("rows")).stream().map(preparation::prepare).toList();
+				var inputs = list(body.get("rows"));
+				prepared = new ArrayList<>(inputs.stream().map(preparation::prepare).toList());
+				// 自动补缺依赖真实内置失败。仅复用服务器原结果中同一份输入的失败凭据，不信任客户端标记。
+				if (QuoteCalculationInputs.fingerprint(body).equals(s(result, "pricing_input_fingerprint"))) {
+					var outputs = list(result.get("rows"));
+					for (int i = 0; i < Math.min(inputs.size(), outputs.size()); i++) {
+						var previousFailure = s(outputs.get(i), "pricing_selection").equals("automatic_fallback")
+								? map(outputs.get(i).get("builtin_failure")) : outputs.get(i);
+						// 原生失败时尚未有候选的行，也须在新规则发布后识别计算依据变化。
+						boolean rangeCostOnly = FallbackEligibility.allowsRangeCost(inputs.get(i), previousFailure);
+						if (rangeCostOnly || FallbackEligibility.allows(inputs.get(i), previousFailure)) {
+							var candidate = rangeCostOnly ? preparation.prepareAutomaticRangeCost(inputs.get(i)) : preparation.prepareAutomatic(inputs.get(i));
+							if (!map(candidate.get("_product_rule_resource")).isEmpty() || !s(candidate, "product_rule_issue").isBlank())
+								prepared.set(i, candidate);
+						}
+					}
+				}
 			}
 			return prepared;
 		}
@@ -397,7 +459,21 @@ public class QuoteService {
 		return repo.catalogs().stream().filter(r -> s(r, "kind").equals("product_rule"))
 			.filter(r -> actor.manager() || !s(r, "status").equals("draft")
 					|| Long.parseLong(str(r.get("created_by"))) == actor.id())
+			.map(rule -> {
+				var value = new LinkedHashMap<>(rule);
+				value.put("auto_scope_review", ProductRuleCatalog.automaticReview(map(rule.get("body"))));
+				return (Map<String, Object>) value;
+			})
 			.toList();
+	}
+
+	/** 草稿编辑的通用选项，不读取报价原文、不执行产品推荐，也不写入任何业务数据。 */
+	public Map<String, Object> productRuleEditorOptions(Actor actor) {
+		var resources = repo.catalogs();
+		var day = LocalDate.now();
+		var installation = InstallationCatalog.active(resources, day);
+		return obj("templates", ProductDefinitions.templates(resources, day), "catalog_rates", ProductRuleCatalog.catalogRates(),
+				"installation_projects", installation.size() == 1 ? list(map(installation.get(0).get("body")).get("projects")) : List.of());
 	}
 
 	/** 首页仅查询草稿数量，不加载规则正文；提醒范围仍限报价负责人。 */
@@ -1579,6 +1655,7 @@ public class QuoteService {
 			var previousReport=map(body.get("ai_retry_report"));
 			if (s(previousReport,"quote_revision").equals(str(quote.get("revision")))) for (var entry : list(previousReport.get("entries"))) {
 				if (!s(entry,"row_id").equals(s(target,"row_id")) || !Set.of("no_suggestion","applied").contains(s(entry,"status"))) continue;
+				if(s(entry,"status").equals("no_suggestion") && !AiRetryReview.POLICY.equals(s(map(entry.get("suggestion")),"review_policy")))continue;
 				var baseline=map(entry.get(s(entry,"status").equals("applied") ? "after" : "before"));
 				if (FailedQuoteAssist.snapshot(target).equals(baseline) && s(entry,"initial_reason").equals(s(calculated.get(i),"reason"))
 						&& yes(map(entry.get("suggestion")).get("used_features"))==yes(data.get("include_features")))
@@ -1629,7 +1706,8 @@ public class QuoteService {
 			entries.add(obj("row_id", rowId, "position", index + 1, "source_file", sourceFile,
 					"source_sheet", sourceSheet, "source_row", sourceRow, "source_locator", sourceLocator,
 					"before", FailedQuoteAssist.snapshot(target), "initial_reason", results.get(index).get("reason"),
-					"suggestion", suggestion, "status", !error.isBlank() ? "request_failed" : yes(suggestion.get("verified")) ? "suggested" : "no_suggestion",
+					"review_before",AiRetryReview.reviewState(target),
+					"suggestion", suggestion, "status", !error.isBlank() ? "request_failed" : AiRetryReview.adoptable(suggestion) ? "suggested" : "no_suggestion",
 					"error", error));
 		}
 		report.put("entries", entries); body.put("ai_retry_report", report);
@@ -1668,7 +1746,7 @@ public class QuoteService {
 				for (String field : FailedQuoteAssist.INPUT_FIELDS) {
 					if (original.containsKey(field)) row.put(field, original.get(field)); else row.remove(field);
 				}
-			} else if (!FailedQuoteAssist.apply(row, map(entry.get("suggestion"))))
+			} else if (!FailedQuoteAssist.apply(row, map(entry.get("suggestion")),yes(data.get("review_confirmed"))))
 				throw new RuleException("第" + entry.get("position") + "行的建议不再适用，本批未修改");
 			count++;
 		}
@@ -1677,6 +1755,13 @@ public class QuoteService {
 		Map<String, Object> saved;
 		try { saved = save(actor, id, body); }
 		catch (RuleException ex) { throw new RuleException("批量保存未完成，本批修改未保存：" + ex.getMessage()); }
+		var savedBody=map(repo.find("quote_order",id,false).get("body"));
+		for(var entry:entries)if(selected.contains(s(entry,"row_id"))) {
+			var row=list(savedBody.get("rows")).stream().filter(r->s(r,"row_id").equals(s(entry,"row_id"))).findFirst().orElseThrow();
+			if(undo)AiRetryReview.restoreReviewState(row,map(entry.get("review_before")));
+			else if(yes(data.get("review_confirmed")))AiRetryReview.confirm(row,map(entry.get("suggestion")),s(report,"id"),actor.id());
+		}
+		repo.updateOrder(id,obj("body",savedBody),false,false);
 		Map<String, Object> response;
 		// 已核验草稿只允许在报价人员明确确认本次建议后继续计算，初次待核验草稿仍不能跳过审批。
 		if (previouslyApprovedAi && yes(data.get("review_confirmed"))) {
@@ -1938,7 +2023,9 @@ public class QuoteService {
 				if (!blank(ruleFamily))
 					throw new RuleException("本行只能选择本单规则或通用规则中的一种");
 				var definition = map(row.get("product_rule"));
-				ProductRuleCatalog.validate(definition);
+				if (!s(row, "row_id").isBlank() && s(row, "row_id").equals(s(original, "row_id")))
+					ProductRuleCatalog.validateSaved(definition, map(original.get("product_rule")));
+				else ProductRuleCatalog.validate(definition);
 				cleaned.put("product_rule", definition);
 			}
 			if (row.containsKey("installation") || original.containsKey("installation"))
@@ -2280,8 +2367,24 @@ public class QuoteService {
 		for (var line : list(parsed.get("lines"))) {
 			if (list(line.get("changes")).stream().noneMatch(change -> s(change, "kind").equals("manual") && s(change, "field").equals("remark"))) continue;
 			var row = rows.get(s(line, "source_row_id"));
-			if (row != null) { row.put("remark", line.get("remark")); continue; }
 			String remark = s(line, "remark"), before = s(map(line.get("before_values")), "remark");
+			if (row != null) {
+				// 仅剥离本次互选导出的原样系统前缀；编辑了前缀的内容仍按真实输入核对。
+				if (before.startsWith("选择型号：") && before.contains("；原系列无满足参数的配置，改用")) {
+					String oldNote = s(row, "remark");
+					int noteAt = oldNote.isEmpty() ? before.lastIndexOf("\n系统计价逻辑：") : before.lastIndexOf("；" + oldNote);
+					String prefix = noteAt >= 0 ? before.substring(0, noteAt) : oldNote.isEmpty() ? before : "";
+					String suffix = noteAt >= 0 ? before.substring(noteAt + (oldNote.isEmpty() ? 0 : oldNote.length() + 1)) : "";
+					if (!prefix.isEmpty() && remark.startsWith(prefix)) {
+						remark = remark.substring(prefix.length());
+						int suffixAt = suffix.isEmpty() ? -1 : remark.lastIndexOf(suffix);
+						if (suffixAt >= 0) remark = remark.substring(0, suffixAt) + remark.substring(suffixAt + suffix.length());
+						remark = remark.replaceFirst("^；", "");
+					}
+				}
+				row.put("remark", remark);
+				continue;
+			}
 			if (line.get("installation_extra_index") != null) {
 				int index = n(line.get("installation_extra_index")).intValueExact();
 				var items = list(body.get("installation_items"));
@@ -2330,7 +2433,7 @@ public class QuoteService {
 			for (var change : list(line.get("changes"))) {
 				String field = s(change, "field");
 				if (!s(change, "kind").equals("manual")) continue;
-				if (Set.of("name", "spec", "unit", "remark").contains(field)) row.put(field, change.get("after"));
+				if (Set.of("name", "spec", "unit").contains(field)) row.put(field, change.get("after"));
 				if (field.equals("quantity")) row.put(s(row, "category").equals("风管") ? "engineering_quantity" : "quantity", change.get("after"));
 				if (field.equals("thickness")) attributes.put("thickness", change.get("after"));
 				if (field.equals("process")) attributes.put("flange", change.get("after"));
@@ -2701,8 +2804,6 @@ public class QuoteService {
 				continue;
 			Map<String, Object> row = resultRows.get(index);
 			Map<String, Object> source = bodyRows.get(index);
-			if (list(line.get("changes")).stream().anyMatch(change -> s(change, "kind").equals("manual") && s(change, "field").equals("remark")))
-				source.put("remark", line.get("remark"));
 			if (yes(source.get("excluded")))
 				continue;
 			if (list(line.get("changes")).stream().anyMatch(change -> s(change, "kind").equals("manual") && s(change, "field").equals("quantity")))
@@ -3222,11 +3323,11 @@ public class QuoteService {
 	/** 客户叫法不能掩盖已绑定的规范产品；历史快照缺失时仍检查本次生效规则。 */
 	private static void requireSupportedMaterialIdentity(Map<String, Object> source, Map<String, Object> calculated,
 			ProductRuleCatalog.Preparation preparation) {
-		requireSupportedMaterialIdentity(source,calculated,() -> preparation.prepare(source));
+		requireSupportedMaterialIdentity(source,calculated,() -> preparation.prepare(source),preparation);
 	}
 
 	private static void requireSupportedMaterialIdentity(Map<String, Object> source, Map<String, Object> calculated,
-			java.util.function.Supplier<Map<String,Object>> prepared) {
+			java.util.function.Supplier<Map<String,Object>> prepared, ProductRuleCatalog.Preparation preparation) {
 		String issue = UnquotableProducts.issue(source);
 		if (issue.isBlank()) {
 			var identified = new LinkedHashMap<>(source);
@@ -3234,7 +3335,17 @@ public class QuoteService {
 			if (!rule.isEmpty()) identified.put("_product_rule_resource", rule.containsKey("body") ? rule : obj("body", rule));
 			issue = UnquotableProducts.issue(identified);
 		}
-		if (issue.isBlank()) issue = UnquotableProducts.issue(prepared.get());
+		if (issue.isBlank()) {
+			var current = prepared.get();
+			issue = UnquotableProducts.issue(current);
+			// 只核对未知原名当前实际匹配的禁报身份，不借此重选价格或覆盖内置/人工规则。
+			var effective = RemarkProductSource.effective(source);
+			if (issue.isBlank() && EquipmentPricingEngine.classifySource(effective).isBlank()
+					&& !FireOutletRule.applies(effective) && !DuctInputGuidance.applies(effective, obj())
+					&& source.get("product_rule") == null && blank(source.get("product_rule_family"))
+					&& map(current.get("_product_rule_resource")).isEmpty())
+				issue = UnquotableProducts.issue(preparation.prepareAutomatic(source));
+		}
 		if (!issue.isBlank()) throw new RuleException(s(source, "name") + "：" + issue);
 	}
 
@@ -3242,12 +3353,13 @@ public class QuoteService {
 	private void requireManualMaterialPrices(Map<String, Object> body, Map<String, Object> result, ValidationContext validation) {
 		Map<String, Map<String, Object>> sources = new HashMap<>();
 		var sourceRows = list(body.get("rows")); var calculatedRows = list(result.get("rows"));
+		var preparation = ProductRuleCatalog.preparation(validation.resources, validation.date);
 		for (int i = 0; i < sourceRows.size(); i++) {
 			var source = sourceRows.get(i);
 			sources.put(s(source, "row_id"), source);
 			if (yes(source.get("excluded")) || yes(source.get("installation_only"))) continue;
 			final int rowIndex=i;
-			requireSupportedMaterialIdentity(source, i < calculatedRows.size() ? calculatedRows.get(i) : obj(), () -> validation.preparedRows().get(rowIndex));
+			requireSupportedMaterialIdentity(source, i < calculatedRows.size() ? calculatedRows.get(i) : obj(), () -> validation.preparedRows().get(rowIndex), preparation);
 		}
 		for (var line : list(result.get("manual_lines"))) {
 			var source = sources.get(s(line, "source_row_id"));

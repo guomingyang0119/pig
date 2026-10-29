@@ -16,7 +16,7 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 public final class DuctPricingEngine {
 
 	// 引擎规则版本随计算行为变化递增，历史报价可据此识别是否需要重新试算。
-	public static final String VERSION = "duct-v33";
+	public static final String VERSION = "duct-v35";
 
 	// 含安装报价沿用的施工范围说明，会随计算结果进入页面或导出备注。
 	public static final List<String> INSTALLATION_NOTES = List.of("不含风机控制箱及控制箱到风机的电线、电器。", "不含风机基础预制的制作；不含抗震支架。",
@@ -583,6 +583,8 @@ public final class DuctPricingEngine {
 
 	private Map<String, Object> row(Map<String, Object> source, Map<String, Object> options,
 			Map<String, Object> resource, Map<String, Object> payment, BigDecimal accessory, boolean aggregate) {
+		var effective = RemarkProductSource.effective(source);
+		if (effective != source) return row(effective, options, resource, payment, accessory, aggregate);
 		var scope = InstallationPricingEngine.materialScopeRow(source, yes(options.get("include_installation")));
 		if (scope != null)
 			return scope;
@@ -590,22 +592,27 @@ public final class DuctPricingEngine {
 				new ArrayList<>(), "billing_unit", "㎡");
 		try {
 			EngineeringImportReview.requirePricingBasis(source);
+			if (!RemarkProductSource.issue(source).isBlank()) throw new RuleException(RemarkProductSource.issue(source));
 			var reviewedSource = new LinkedHashMap<>(source);
 			String unitReview = EquipmentReview.sourceReason(reviewedSource);
 			if (!unitReview.isBlank() && !yes(reviewedSource.get("source_issue_confirmed"))) throw new RuleException(unitReview);
-			if (!blank(source.get("product_rule_issue")))
+			if (!blank(source.get("product_rule_issue"))) {
+				if (!map(source.get("product_rule_problem")).isEmpty()) out.put("problem", source.get("product_rule_problem"));
 				throw new RuleException(s(source, "product_rule_issue"));
+			}
 			String productDescription = description(source);
 			if (map(source.get("_product_rule_resource")).isEmpty() && productDescription.contains("风管")
 					&& (productDescription.contains("复合") || productDescription.contains("彩钢") && productDescription.contains("镀锌")))
-				throw new RuleException("待确认：复合风管缺少完整计价规则，请确认面层、芯材、内层及加工成本，不能仅按普通镀锌风管报价");
+				throw resource == null ? new RuleException("待确认：复合风管缺少完整计价规则，请确认面层、芯材、内层及加工成本，不能仅按普通镀锌风管报价")
+						: FallbackEligibility.unavailable("builtin_configuration_unsupported", "待确认：复合风管缺少完整计价规则，请确认面层、芯材、内层及加工成本，不能仅按普通镀锌风管报价");
 			if (yes(source.get("source_issue")) && !yes(source.get("source_issue_confirmed"))) {
 				String sourceReason = EquipmentReview.sourceReason(new LinkedHashMap<>(source));
 				throw new RuleException(sourceReason.isBlank() ? "原文件存在未缓存公式或错误值，请先核对" : sourceReason);
 			}
 			if ((!s(source, "category").isEmpty() && !s(source, "category").equals("风管"))
 					|| (s(source, "category").isEmpty() && !s(source, "name").contains("风管")))
-				throw new RuleException("首版仅对风管类自动报价");
+				throw resource == null ? new RuleException("首版仅对风管类自动报价")
+						: FallbackEligibility.unavailable("builtin_product_unsupported", "首版仅对风管类自动报价");
 			if (blank(source.get("name")))
 				throw new RuleException("缺少产品名称");
 			if (resource == null)

@@ -350,6 +350,14 @@ public final class DuctExportService {
 		}
 		String value = s(row, "spec");
 		var a = map(result.getOrDefault("attributes", row.get("attributes")));
+		if (EquipmentPricingEngine.classify(row).equals("fan")) {
+			var problem = EquipmentTextFields.fanModelProblem(row, a);
+			if (problem != null && problem.code().equals("fan_model_required")) {
+				String retained = EquipmentTextFields.fanModelText(row, value);
+				retained = retained.replaceFirst("^(?:[\\s；;]+|型号\\s*[:：=＝]\\s*)+", "").trim();
+				return "实际型号待补充" + (retained.isBlank() ? "" : "；" + retained);
+			}
+		}
 		if (value.isEmpty()) {
 			value = !blank(a.get("diameter")) ? "Φ" + s(a, "diameter")
 					: String.join("×",
@@ -570,11 +578,15 @@ public final class DuctExportService {
 					var selectedFan = map(detail.get("selected_fan"));
 					String selectedModel = FanModelNames.displayModel(detail);
 					String modelRemark = selectedModel.isEmpty() ? note : "选择型号：" + selectedModel;
-					remark = modelRemark + (sourceRemark.isEmpty() ? "" : (modelRemark.isEmpty() ? "" : "；") + sourceRemark);
+					if (yes(detail.get("family_substituted")) && !note.isEmpty()) modelRemark += "；" + note;
+					remark = modelRemark + (yes(detail.get("family_substituted")) || sourceRemark.isEmpty()
+							? "" : (modelRemark.isEmpty() ? "" : "；") + sourceRemark);
 					String requestedSpec = s(source, "spec");
 					if (!selectedFan.isEmpty() && !requestedSpec.isBlank()
 							&& !equipmentSpecification(source, r).contains(requestedSpec) && !remark.contains(requestedSpec))
 						remark += (remark.isEmpty() ? "" : "；") + "客户要求规格：" + requestedSpec;
+					// 替代说明在前，客户备注在末尾，回导可按受信基准分离系统输出与客户输入。
+					if (yes(detail.get("family_substituted")) && !sourceRemark.isEmpty()) remark += "；" + sourceRemark;
 				}
 				else {
 					String purchased = PurchasedEquipment.selectedRemark(detail);

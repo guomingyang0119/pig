@@ -16,11 +16,11 @@ import static com.pig4cloud.pig.admin.quotation.QuoteData.*;
 public final class InstallationPricingEngine {
 
 	// 安装规则版本用于历史计算追溯，改变结算口径时需重新试算。
-	public static final String VERSION = "installation-v14";
+	public static final String VERSION = "installation-v16";
 	static final BigDecimal TAX_FACTOR = n("1.01");
 
-	// 安装支持的计量单位；只有已确认的少量产品允许等量使用“台/个/套”，其余不能自动换算。
-	private static final Set<String> UNITS = Set.of("㎡", "台", "个", "套");
+	// 安装支持的计量单位；计数对应须有规则内确认或指定产品的既有例外，其他口径仍须明确工程量。
+	private static final Set<String> UNITS = Set.of("㎡", "台", "个", "套", "节");
 
 	/** 新版整单安装选项优先；仅为兼容旧报价，缺少该字段时才读取风管或设备中的旧开关。 */
 	public static boolean enabled(Map<String, Object> quote) {
@@ -151,6 +151,7 @@ public final class InstallationPricingEngine {
 
 	// 安装识别同时参考名称、规格和备注中的用途、结构与范围说明。
 	private static String description(Map<String, Object> row) {
+		row = RemarkProductSource.effective(row);
 		return s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark");
 	}
 
@@ -273,6 +274,8 @@ public final class InstallationPricingEngine {
 	 * 根据地区、产品类别、材质、法兰和用途匹配安装指标项目。只有规则能够唯一确定时才返回项目编号，否则交由报价人员选择。
 	 */
 	public static String autoProject(Map<String, Object> row, Map<String, Object> quote, String region) {
+		var effective = RemarkProductSource.effective(row);
+		if (effective != row) return autoProject(effective, quote, region);
 		String text = description(row), name = s(row, "name");
 		boolean sx = region.equals("陕西");
 		if (!sx && !InstallationCatalog.FOUR_REGIONS.contains(region))
@@ -394,6 +397,12 @@ public final class InstallationPricingEngine {
 	 */
 	public static Map<String, Object> line(Map<String, Object> row, Map<String, Object> entry,
 			Map<String, Object> quote, Map<String, Object> catalog, Map<String, Object> calculated) {
+		var effective = RemarkProductSource.effective(row);
+		if (effective != row) {
+			var result = line(effective, entry, quote, catalog, calculated);
+			result.put("name", row.get("name"));
+			return result;
+		}
 		String region = region(map(quote.get("installation_options")).get("region"));
 		var out = obj("name", first(row.get("name"), "安装项目"), "status", "pending", "reason", "", "amount", null);
 		try {
@@ -436,7 +445,7 @@ public final class InstallationPricingEngine {
 			String unit = unit(first(entry.get("unit"), project == null ? null : project.get("unit"),
 					isDuct ? "㎡" : row.get("unit")));
 			if (!UNITS.contains(unit))
-				throw new RuleException("请确认安装计量单位（㎡、台、个、套）");
+				throw new RuleException("请确认安装计量单位（㎡、台、个、套、节）");
 			if (project != null && !unit.equals(s(project, "unit")))
 				throw new RuleException("安装单位与所选项目不一致，不能自动换算");
 			if (isDuct && state.equals("finished") && !unit.equals("㎡"))
@@ -459,7 +468,7 @@ public final class InstallationPricingEngine {
 				if (areaElbow)
 					quantity = first(row.get("engineering_quantity"), row.get("quantity"));
 				else if (!unit.equals(duct(row) ? "㎡" : unit(row.get("unit"))) && !staticBoxCountEquivalent
-						&& !outletCountEquivalent && !pressureReliefCountEquivalent)
+						&& !outletCountEquivalent && !pressureReliefCountEquivalent && (duct(row) || !ProductRuleUnits.installationEquivalent(row, unit)))
 					throw new RuleException("供货与安装单位不同，请确认安装工程量及单位");
 				else
 					quantity = row.get(duct(row) ? "engineering_quantity" : "quantity");

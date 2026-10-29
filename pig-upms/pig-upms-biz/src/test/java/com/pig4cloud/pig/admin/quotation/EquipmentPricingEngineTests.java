@@ -57,19 +57,17 @@ class EquipmentPricingEngineTests {
 	}
 
 	@Test
-	void explicitSpeedWithoutAPrefixIsPreservedAndUnmatchedSpeedKeepsReferenceCandidates() throws IOException {
-		var parsed = EquipmentPricingEngine.parseAttributes(obj("name", "风机", "spec", "SWF-I-7 风量27500 风压700 11kW 2900r/min", "attributes", obj()));
+	void explicitSpeedWithoutAPrefixIsPreservedButDoesNotRestrictRangeSelection() throws IOException {
+		var parsed = EquipmentPricingEngine.parseAttributes(obj("name", "风机", "spec", "SWF-I-5 风量4896 风压382 1.1kW 2900r/min", "attributes", obj()));
 		assertEquals("2900", parsed.get("speed"));
 		Map<String, Object> catalog = new ObjectMapper()
 				.readValue(DuctExportService.asset("equipment-catalog-seed.json"), Map.class);
-		var error = assertThrows(EquipmentFanSelector.SelectionException.class,
-				() -> EquipmentFanSelector.select(obj(), catalog, parsed));
-		assertTrue(error.getMessage().contains("转速2900"), error.getMessage());
-		assertFalse(error.candidates.isEmpty());
-		assertTrue(error.candidates.stream().allMatch(p -> n(p.get("speed")).compareTo(n("2900")) != 0));
-		assertTrue(error.candidates.stream().allMatch(p -> s(p, "requirement_mismatches").contains("客户要求2900")));
-		assertThrows(EquipmentFanSelector.SelectionException.class,
-				() -> EquipmentFanSelector.select(obj("candidate_id", error.candidates.get(0).get("id")), catalog, parsed));
+		catalog.putAll(new ObjectMapper().readValue(DuctExportService.asset("fan-ranges-20261014.json"), Map.class));
+		var selected = EquipmentFanSelector.select(obj(), catalog, parsed);
+		assertEquals("2900", selected.detail().get("requested_speed"));
+		var point = map(selected.detail().get("selected_fan"));
+		assertEquals("1450", point.get("speed"));
+		assertEquals(List.of("1.1"), point.get("powers"));
 	}
 
 	/**
@@ -101,21 +99,17 @@ class EquipmentPricingEngineTests {
 	}
 
 	/**
-	 * 核验已给型号/性能需求时选择合格工况，不能把需求功率直接当作实际选型电机功率。
+	 * 旧点值把客户1.1kW当最低值并选择5.5kW的行为已退役，不能再自动形成报价。
 	 *
 	 */
 	@Test
-	void mainFanPathChoosesTheSmallestQualifiedOperatingPoint() throws IOException {
+	void legacyPointCatalogCannotIncreaseCustomerPowerAndSelectAnOldOperatingPoint() throws IOException {
 		Map<String, Object> catalog = new ObjectMapper()
 			.readValue(DuctExportService.asset("equipment-catalog-seed.json"), Map.class);
-		var selected = EquipmentFanSelector.select(obj(), catalog,
-				obj("model", "SWF-I-5", "airflow", "4896", "pressure", "382", "power", "1.1"));
-		var fan = map(selected.detail().get("selected_fan"));
-		assertEquals("SWF-5", fan.get("model"));
-		assertEquals(0, n(((List<?>) fan.get("powers")).get(0)).compareTo(n("5.5")));
-		assertEquals(0, n(fan.get("size")).compareTo(n("5")));
-		assertEquals(0, n(fan.get("airflow")).compareTo(n("11342")));
-		assertEquals(0, n(fan.get("pressure")).compareTo(n("960")));
+		var error = assertThrows(EquipmentFanSelector.SelectionException.class, () -> EquipmentFanSelector.select(obj(), catalog,
+				obj("model", "SWF-I-5", "airflow", "4896", "pressure", "382", "power", "1.1")));
+		assertEquals("fan_range_catalog_required", error.problem.code());
+		assertTrue(error.candidates.isEmpty());
 	}
 
 	/**
@@ -325,8 +319,9 @@ class EquipmentPricingEngineTests {
 	@TestFactory
 	Stream<DynamicTest> matchesFrozenPythonEquipmentResults() throws IOException {
 		Map<String, Object> fixture;
+		// 保留20261023历史Python参考；派生快照仅将7条小消声器按已确认280保底改为独立常量预期。
 		try (InputStream in = new GZIPInputStream(Objects
-			.requireNonNull(getClass().getResourceAsStream("/quotation/equipment-current-policy-20261023-golden.json.gz")))) {
+			.requireNonNull(getClass().getResourceAsStream("/quotation/equipment-current-policy-20261028-silencer-minimum-golden.json.gz")))) {
 			fixture = new ObjectMapper().readValue(in, Map.class);
 		}
 		var cases = list(fixture.get("cases"));
@@ -336,6 +331,33 @@ class EquipmentPricingEngineTests {
 			var engine = new EquipmentPricingEngine();
 			var q = map(c.get("quote"));
 			var resources = list(map(fixture.get("catalogs")).get(s(c, "resources_key")));
+			String caseName = s(c, "name");
+			// 这些冻结用例明确使用历史点值目录。本次规范取消其自动计算，保留原文件用于追溯。
+			boolean retiredPointCase = caseName.startsWith("fan-confirmed-") || caseName.startsWith("fan-select-")
+					|| caseName.startsWith("fan-edge-") || Set.of("source-regression-43", "source-regression-44",
+							"source-regression-45", "source-regression-46", "parse-斜流式风机 GXF-9", "parse-风机 HL3-2A-NO6A").contains(caseName);
+			if (retiredPointCase) {
+				assertEquals("equipment_v1", q.get("pricing_mode"));
+				var catalog = map(resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog")).findFirst().orElseThrow().get("body"));
+				assertNotEquals("range-v1", catalog.get("fan_selection"));
+				assertTrue(list(catalog.get("fan_points")).stream().noneMatch(p -> p.containsKey("airflow_min")));
+				var result = engine.calculate(q, resources, map(c.get("policy")));
+				assertEquals(1, list(result.get("rows")).size());
+				var row = list(result.get("rows")).get(0);
+				assertEquals("pending", row.get("status"));
+				// 旧点值目录仍不可报价；NO6A 含非法机号时先返回更具体的参数错误。
+				String expectedProblem = caseName.equals("parse-风机 HL3-2A-NO6A")
+						? "fan_machine_number_invalid" : "fan_range_catalog_required";
+				assertEquals(expectedProblem, map(row.get("problem")).get("code"));
+				assertNull(row.get("unit_cost"));
+				assertNull(row.get("unit_price"));
+				assertNull(row.get("amount"));
+				assertTrue(map(map(row.get("detail")).get("selected_fan")).isEmpty());
+				assertTrue(list(row.get("candidates")).isEmpty());
+				assertEquals(1, n(result.get("pending_count")).intValueExact());
+				assertFalse(yes(result.get("formal_ready")));
+				return;
+			}
 			var expected = frozenExpectedWithConfirmedSplice(c, cases);
 			// 新64项独立Python预期已物化长短边、圆阀1.3及本轮供货1.2，不再被旧转换覆盖。
 			boolean currentStainlessPolicy = s(c, "stainless_supply_policy").equals("20261023");
@@ -355,29 +377,11 @@ class EquipmentPricingEngineTests {
 			applyConfirmedValveSplices(q, resources, expected);
 			if (!currentStainlessPolicy) applyConfirmedRoundValveCost(q, resources, expected);
 			applyIndependentGravityIndicator(q, resources, expected);
-			applyConfirmedFanAliases(s(c, "name"), q, resources, expected);
 			var result = s(q, "pricing_mode").equals("mixed_v1") ? engine.mixed(q, resources, map(c.get("policy")))
 					: engine.calculate(q, resources, map(c.get("policy")));
-			// 新确认的系列锁定约束覆盖旧基准中的未知系列自动替代行为。
-			if (Set.of("fan-edge-2747", "fan-edge-2748", "fan-edge-2749").contains(s(c, "name"))) {
-				var row = list(result.get("rows")).get(0);
-				assertEquals("pending", row.get("status"));
-				assertEquals("客户指定的风机系列没有匹配资料，不能自动更换系列", row.get("reason"));
-				assertNull(row.get("unit_price"));
-				assertNull(row.get("amount"));
-				assertTrue(map(map(row.get("detail")).get("selected_fan")).isEmpty());
-				assertFalse(yes(result.get("formal_ready")));
-				return;
-			}
 			if (s(c, "name").equals("parse-正压送风口"))
 				applyConfirmedPressureSupplyCost(expected);
 			allowDetailedFrozenCostReason(list(expected.get("rows")), list(result.get("rows")));
-			// 该旧用例缺的是目录低档资料；只更新本次明确调整的提示，金额、状态和其余字段继续冻结比较。
-			if (s(c, "name").equals("fan-edge-2753")) {
-				var expectedRow = list(expected.get("rows")).get(0);
-				assertEquals("需核实双速高低档风量/风压配对数据", expectedRow.get("reason"));
-				expectedRow.put("reason", "系统风机资料缺少低速档风量、低速档风压，暂不能验证客户要求；请补齐系统资料。参数无误时，可使用已有成本模板或补充已核实的整台采购成本。");
-			}
 			if (s(q, "pricing_mode").equals("mixed_v1"))
 				compareMixed(expected, result, q);
 			else {
@@ -619,38 +623,6 @@ class EquipmentPricingEngineTests {
 
 	private static BigDecimal frozenDecimal(Object value) {
 		return new BigDecimal(Objects.requireNonNull(value).toString());
-	}
-
-	/** 两个旧别名曾跨系列选 HTF；新口径限定 SWF。用源表指定工况及逐项独立核算值更新预期，不读取实际结果。 */
-	private static void applyConfirmedFanAliases(String name, Map<String, Object> quote,
-			List<Map<String, Object>> resources, Map<String, Object> expected) {
-		boolean gxf = name.equals("parse-斜流式风机 GXF-9");
-		if (!gxf && !name.equals("parse-风机 HL3-2A-NO6A")) return;
-		var catalog = resources.stream().filter(r -> s(r, "kind").equals("equipment_catalog"))
-				.map(r -> map(r.get("body"))).findFirst().orElseThrow();
-		var point = list(catalog.get("fan_points")).stream().filter(p -> s(p, "id").equals(gxf ? "swf:56" : "swf:26")).findFirst().orElseThrow();
-		var body = list(catalog.get("fan_bodies")).stream().filter(p -> s(p, "id").equals(gxf ? "body:SWF:9" : "body:SWF:6")).findFirst().orElseThrow();
-		var motor = list(catalog.get("motors")).stream().filter(p -> s(p, "id").equals(gxf ? "motor:32:4" : "motor:28:1")).findFirst().orElseThrow();
-		String metal = gxf ? "361.5160500" : "165.8720700", other = gxf ? "325.5850" : "194.20200";
-		BigDecimal cost = frozenDecimal(metal).add(frozenDecimal(other)).add(frozenDecimal(motor.get("cost")));
-		var row = list(expected.get("rows")).get(0);
-		map(row.get("detail")).putAll(obj("selected_fan", point, "fan_cost", obj("body", body, "motor", motor,
-				"material_cost", metal, "body_other_cost", other, "motor_cost", motor.get("cost"), "steel_price", "4300"),
-				"substituted", !gxf, "selection_note", gxf ? "" : "按风量、风压选择有完整成本的最小合格规格"));
-		assertEquals(false, map(quote.get("equipment_options")).get("include_freight"));
-		assertEquals(false, map(quote.get("equipment_options")).get("tax_included"));
-		String supply = frozenQuotient(cost, new BigDecimal("0.75"));
-		BigDecimal unit = cost.divide(new BigDecimal("0.75"), 0, RoundingMode.CEILING);
-		BigDecimal quantity = frozenDecimal(list(quote.get("rows")).get(0).get("quantity"));
-		BigDecimal amount = unit.multiply(quantity);
-		row.putAll(obj("unit_cost", cost.toPlainString(), "supply_unit_unrounded", supply,
-				"supply_amount_unrounded", frozenQuotient(cost.multiply(quantity), new BigDecimal("0.75")),
-				"unit_price", unit.toPlainString(), "amount", amount.toPlainString(), "body_amount", amount.toPlainString()));
-		var values = List.of(cost.toPlainString(), supply, supply, "0", unit.toPlainString(), amount.toPlainString());
-		var trace = list(row.get("trace"));
-		assertEquals(values.size(), trace.size());
-		for (int i = 0; i < trace.size(); i++) trace.get(i).put("value", values.get(i));
-		updateFrozenEquipmentTotal(expected);
 	}
 
 	private static String frozenQuotient(BigDecimal numerator, BigDecimal denominator) {

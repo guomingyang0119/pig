@@ -138,6 +138,13 @@ public class QuoteController {
 		return R.ok(service.productRules(actor()));
 	}
 
+	/** 通用编辑选项只读，与产品行推荐及负责人发布权限独立。 */
+	@GetMapping("/product-rules/editor-options")
+	@HasPermission("quote_view")
+	public R<?> productRuleEditorOptions() {
+		return R.ok(service.productRuleEditorOptions(actor()));
+	}
+
 	/** 首页待发布提醒只读取数量，避免传输全量规则正文。 */
 	@GetMapping("/product-rules/summary")
 	@HasPermission("quote_manage")
