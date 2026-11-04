@@ -27,7 +27,23 @@ spring:
               predicates:
                 - Path=/auth/**
             # AI导入及歧义行辅助优先匹配；覆盖主备各600秒的最大时限及返回开销。
-            # 其他报价操作继续走普通admin路由的响应超时。
+            # 保存/试算单独限定路径和方法，普通查询仍走admin路由。
+            - id: pig-upms-quote-save
+              uri: lb://pig-upms-biz
+              predicates:
+                - Path=/admin/quotation/quotes/*
+                - Method=PUT,PATCH
+              order: -2
+              metadata:
+                response-timeout: 120000
+            - id: pig-upms-quote-calculate
+              uri: lb://pig-upms-biz
+              predicates:
+                - Path=/admin/quotation/quotes/*/calculate
+                - Method=POST
+              order: -2
+              metadata:
+                response-timeout: 120000
             - id: pig-upms-ai-import
               uri: lb://pig-upms-biz
               predicates:

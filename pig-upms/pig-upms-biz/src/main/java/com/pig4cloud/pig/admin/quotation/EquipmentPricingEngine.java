@@ -17,7 +17,7 @@ import com.pig4cloud.pig.admin.quotation.EquipmentFanSelector.Cost;
 public final class EquipmentPricingEngine {
 
 	// 纯设备及混合报价分别记录引擎版本，供正式导出检查试算是否仍适用。
-	public static final String VERSION = "equipment-v67", MIXED_VERSION = "mixed-v69";
+	public static final String VERSION = "equipment-v70", MIXED_VERSION = "mixed-v72";
 
 	// 内置设备计算类型；组合和全新公式产品另通过产品规则进入 custom 成本分支。
 	public static final Set<String> KINDS = ProductDefinitions.equipmentKinds();
@@ -135,6 +135,7 @@ public final class EquipmentPricingEngine {
 	// 分类与唯一性核验共用完整电动阀短语，结构词中的“式”不改变计算类型。
 	static final Pattern ELECTRIC_CONTROL_NAME = Pattern.compile(
 			"电动\\s*(?:(?:对开(?:式)?|多叶(?:式)?|风量)\\s*)*(?:调节(?:风)?阀|蝶阀|风量阀|阀)");
+	static final String UNRESOLVED_ELECTRIC_NAME = "主产品含电动要求，但名称尚未对应唯一的电动调节阀规则，请核对产品类型，不能套用手动调节阀成本";
 
 	static String positiveElectricText(String text) {
 		return text.replaceAll("(?:非|无须|无需|不用|不需要|不需|不带|不含|不采用|不配|没有|无)\\s*"
@@ -182,7 +183,7 @@ public final class EquipmentPricingEngine {
 		if (!Set.of("", "manual", "electric_control").contains(kind)) return "";
 		if (name.contains("手动")) return "主产品同时包含手动和电动要求，控制方式冲突，请核对实际产品类型";
 		if (!ELECTRIC_CONTROL_NAME.matcher(name).find())
-			return "主产品含电动要求，但名称尚未对应唯一的电动调节阀规则，请核对产品类型，不能套用手动调节阀成本";
+			return UNRESOLVED_ELECTRIC_NAME;
 		if (s(map(row.get("attributes")), "equipment_kind").equals("manual"))
 			return "主产品明确为电动调节阀，与所选手动调节阀计算类型冲突，请核对计算类型";
 		return "";
@@ -332,12 +333,14 @@ public final class EquipmentPricingEngine {
 	private static Map<String, Object> parseAttributes(Map<String, Object> row, String kind, boolean valveAlias, boolean normalizeDimensions) {
 		var effective = RemarkProductSource.effective(row);
 		if (effective != row) return parseAttributes(effective, kind, valveAlias, normalizeDimensions);
+		if (SmallFanRules.applies(row)) return SmallFanRules.attributes(row);
 		Map<String, Object> a = obj();
 		map(row.get("attributes")).forEach((k, v) -> {
 			if (v != null && !"".equals(v))
 				a.put(k, v);
 		});
 		String sourceText = s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark") + " " + s(row, "source_text");
+		if (kind.equals("fan")) sourceText = FanAirflowUnitReview.effectiveText(row, sourceText);
 		String dimensionText = AiInputReview.normalizeDimensionUnits(sourceText);
 		String all = FanSpeedParameters.normalizeUnits(dimensionText);
 		boolean fireValveInput = Set.of("fire", "electric_fire").contains(kind);
@@ -926,6 +929,12 @@ public final class EquipmentPricingEngine {
 		try {
 			if (!RemarkProductSource.issue(row).isBlank()) throw new RuleException(RemarkProductSource.issue(row));
 			UnquotableProducts.requireSupported(row);
+			if (classify(row).equals("fan")) {
+				String unitIssue = FanSpeedParameters.unitIssue(FanAirflowUnitReview.effectiveText(row,
+						s(row, "name") + " " + s(row, "spec") + " " + s(row, "remark")));
+				if (!unitIssue.isBlank()) throw new RuleException(new QuoteProblem("fan_parameter_unit_review", "parameters", unitIssue,
+						"请核对本行参数；风量m/h可在风量单位核对中明确采用m³/h，普通来源确认不能替代单位核对。", List.of()));
+			}
 			var nameReview = SmokeProductNames.review(row);
 			out.put("product_name_review", nameReview);
 			if (!s(nameReview, "issue").isBlank()) throw new RuleException(new QuoteProblem("product_name_conflict", "conflict",

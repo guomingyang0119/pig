@@ -69,6 +69,27 @@ WHERE NOT EXISTS(SELECT 1 FROM quote_setting WHERE id='policy');
 INSERT INTO quote_setting(id,body,revision)
 SELECT 'catalog-lock','{}',1 WHERE NOT EXISTS(SELECT 1 FROM quote_setting WHERE id='catalog-lock');
 -- BEGIN QUOTATION MENU INIT
+-- 快速保存/持久后台试算增量。维护窗口显式执行，保留已提交报价、任务和审计。
+CREATE TABLE IF NOT EXISTS quote_calculation_slot (
+  id varchar(32) PRIMARY KEY, token varchar(32) NOT NULL, lease_until bigint NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报价重核验唯一执行位';
+INSERT INTO quote_calculation_slot(id,token,lease_until)
+SELECT 'calculation','',0 WHERE NOT EXISTS (SELECT 1 FROM quote_calculation_slot WHERE id='calculation');
+INSERT INTO quote_calculation_slot(id,token,lease_until)
+SELECT 'admission','',0 WHERE NOT EXISTS (SELECT 1 FROM quote_calculation_slot WHERE id='admission');
+CREATE TABLE IF NOT EXISTS quote_calculation_job (
+  id varchar(32) PRIMARY KEY, quote_id varchar(32) NOT NULL, input_revision int NOT NULL,
+  actor_id bigint NOT NULL, actor_name varchar(200) NOT NULL, actor_manager boolean NOT NULL,
+  quote_owner_id bigint NOT NULL, state varchar(24) NOT NULL,
+  options longtext NOT NULL, request_hash varchar(64) NOT NULL, dependency_stamp varchar(64) NOT NULL,
+  token varchar(32) NOT NULL DEFAULT '', wait_until bigint NOT NULL, run_until bigint NOT NULL DEFAULT 0,
+  committed_revision int NULL, error_message varchar(500) NOT NULL DEFAULT '', attempts int NOT NULL DEFAULT 0,
+  queue_ms bigint NOT NULL DEFAULT 0, duration_ms bigint NULL,
+  created_at datetime(3) NOT NULL, started_at datetime(3) NULL, finished_at datetime(3) NULL,
+  KEY idx_quote_calc_queue(state,created_at,id), KEY idx_quote_calc_quote(quote_id,created_at,id),
+  CONSTRAINT fk_quote_calc_quote FOREIGN KEY(quote_id) REFERENCES quote_order(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='确定性报价后台核验与试算';
+
 -- 菜单使用 930000—930007。若已有同号的其他菜单，先更换下列 ID，勿覆盖原菜单。
 START TRANSACTION;
 INSERT INTO sys_menu(menu_id,name,permission,path,component,parent_id,icon,visible,sort_order,keep_alive,embedded,menu_type,create_by,del_flag)

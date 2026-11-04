@@ -351,6 +351,11 @@ public final class DuctImportService {
 	 * 在前 20 条非空行中识别风管常用表头。
 	 * 名称及规格列均要求唯一；整表有多个表头候选时返回空建议，交由报价员确认。
 	 */
+	private static String specificationHeader(Object value) {
+		return str(value).replaceAll("\\s+", "").replace('（', '(').replace('）', ')')
+				.replaceFirst("(?i)^(规格|规格型号|型号规格|规格及型号|规格/型号|型号/规格|规格参数|技术参数)\\((?:mm|毫米|㎜)\\)$", "$1");
+	}
+
 	public Map<String, Object> suggest(Map<String, Object> sheet) {
 		List<Map<String, Object>> candidates = new ArrayList<>();
 		for (Map<String, Object> row : list(sheet.get("rows")).stream().limit(20)
@@ -364,8 +369,9 @@ public final class DuctImportService {
 			});
 			List<Integer> features = indices(cells, Set.of("项目特征描述", "项目特征", "特征描述"));
 			if (features.size() == 1) found.put("feature_description", features.get(0));
-			List<Integer> specs = indices(cells, Set.of("规格范围", "规格描述", "规格", "规格参数", "技术参数")),
-					models = indices(cells, Set.of("规格型号", "型号规格", "规格及型号", "规格/型号"));
+			List<Object> specificationHeaders = cells.stream().map(DuctImportService::specificationHeader).map(v -> (Object) v).toList();
+			List<Integer> specs = indices(specificationHeaders, Set.of("规格范围", "规格描述", "规格", "规格参数", "技术参数")),
+					models = indices(specificationHeaders, Set.of("规格型号", "型号规格", "规格及型号", "规格/型号"));
 			if (specs.size() == 1) {
 				found.put("spec", specs.get(0));
 				if (models.size() == 1)
@@ -522,7 +528,7 @@ public final class DuctImportService {
 				.filter(row -> blank(row.get("header_end_row"))).toList()) {
 			Map<String, Object> mapping = obj();
 			List<Object> normalized = cells(row).stream()
-				.map(v -> (Object) str(v).replace(" ", "").replace('（', '(').replace('）', ')'))
+					.map(v -> (Object) specificationHeader(v))
 				.toList();
 			headers.forEach((key, labels) -> {
 				var at = indices(normalized, labels);

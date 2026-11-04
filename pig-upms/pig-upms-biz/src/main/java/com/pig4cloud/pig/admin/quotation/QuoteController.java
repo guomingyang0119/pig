@@ -24,6 +24,9 @@ public class QuoteController {
 	private final QuoteService service;
 	private final AiQuoteImportService aiImporter;
 	private final AiImportJobService aiJobs;
+	private QuoteCalculationJobService calculationJobs;
+	@org.springframework.beans.factory.annotation.Autowired
+	void calculationJobs(QuoteCalculationJobService jobs) { this.calculationJobs=jobs; }
 
 	public QuoteController(QuoteService service, AiQuoteImportService aiImporter, AiImportJobService aiJobs) {
 		this.service = service;
@@ -152,6 +155,13 @@ public class QuoteController {
 		return R.ok(service.productRuleSummary(actor()));
 	}
 
+	/** 批量归档已停用规则；全部记录在同一事务内核对状态与修订号。 */
+	@PostMapping("/product-rules/archive")
+	@HasPermission("quote_manage")
+	public R<?> archiveProductRules(@RequestBody Map<String, Object> data) {
+		return R.ok(service.archiveProductRules(actor(), data));
+	}
+
 	/** 发布后的批量应用先预览实际命中行，不写入清单或触发计价。 */
 	@PostMapping("/product-rules/{id}/matches")
 	@HasPermission("quote_view")
@@ -223,6 +233,12 @@ public class QuoteController {
 		if (file.isEmpty() || file.getSize() > DuctImportService.MAX_BYTES)
 			throw new RuleException("请选择24MB以内的Excel文件");
 		return R.ok(service.upload(actor(), file.getBytes(), file.getOriginalFilename()));
+	}
+
+	@PostMapping("/imports/{id}/preview")
+	@HasPermission("quote_edit")
+	public R<?> previewImport(@PathVariable String id,@RequestBody Map<String,Object> data) {
+		return R.ok(service.previewImport(actor(),id,data));
 	}
 
 	/**
@@ -381,11 +397,44 @@ public class QuoteController {
 	/**
 	 * 在当前修订号上试算并保存结果，返回待确认项与可否正式报价的状态。
 	 */
+	@GetMapping("/quotes/{id}/fan-airflow-unit-reviews")
+	@HasPermission("quote_view")
+	public R<?> fanAirflowUnitReviews(@PathVariable String id) {
+		return R.ok(service.fanAirflowUnitReviews(actor(), id));
+	}
+
+	@PostMapping("/quotes/{id}/fan-airflow-unit-reviews")
+	@HasPermission("quote_edit")
+	public R<?> confirmFanAirflowUnits(@PathVariable String id, @RequestBody Map<String, Object> data) {
+		return R.ok(service.confirmFanAirflowUnits(actor(), id, data));
+	}
+
 	@PostMapping("/quotes/{id}/calculate")
 	@HasPermission("quote_edit")
 	public R<?> calculate(@PathVariable String id, @RequestBody Map<String, Object> data) {
 		return R.ok(service.calculate(actor(), id, data));
 	}
+
+	@GetMapping("/quotes/{id}/operations/{operationId}")
+	@HasPermission("quote_view")
+	public R<?> operationStatus(@PathVariable String id,@PathVariable String operationId) {
+		return R.ok(service.operationStatus(actor(),id,operationId));
+	}
+
+	@PostMapping("/quotes/{id}/calculation-jobs")
+	@HasPermission("quote_edit")
+	public R<?> submitCalculation(@PathVariable String id,@RequestBody Map<String,Object> request) {
+		return R.ok(calculationJobs.submit(actor(),id,request));
+	}
+	@GetMapping("/quotes/{id}/calculation-jobs/current")
+	@HasPermission("quote_view")
+	public R<?> currentCalculation(@PathVariable String id) { return R.ok(calculationJobs.current(actor(),id)); }
+	@GetMapping("/quotes/{id}/calculation-jobs/{jobId}")
+	@HasPermission("quote_view")
+	public R<?> calculationStatus(@PathVariable String id,@PathVariable String jobId) { return R.ok(calculationJobs.status(actor(),id,jobId)); }
+	@PostMapping("/quotes/{id}/calculation-jobs/{jobId}/cancel")
+	@HasPermission("quote_edit")
+	public R<?> cancelCalculation(@PathVariable String id,@PathVariable String jobId) { return R.ok(calculationJobs.cancel(actor(),id,jobId)); }
 
 	/** 保留完整编辑输入，只传输列表所需的结果；逐步计算由行接口读取。 */
 	@GetMapping("/quotes/{id}/workbench")
@@ -518,6 +567,15 @@ public class QuoteController {
 	@ExceptionHandler(RuleException.class)
 	public ResponseEntity<R<Void>> invalid(RuleException e) {
 		return ResponseEntity.badRequest().body(R.failed(e.getMessage()));
+	}
+
+	/** 数据库断连和提交异常均需核对回执，不能把缺少响应当作未提交。 */
+	@ExceptionHandler({org.springframework.dao.DataAccessResourceFailureException.class,
+			org.springframework.transaction.CannotCreateTransactionException.class,
+			org.springframework.transaction.TransactionSystemException.class})
+	public ResponseEntity<R<Void>> databaseUnavailable(RuntimeException error) {
+		org.slf4j.LoggerFactory.getLogger(QuoteController.class).error("报价数据库访问中断，异常类型：{}",error.getClass().getSimpleName());
+		return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(R.failed("报价数据库暂时不可用；保存或试算的结果需继续核对，页面输入请保留"));
 	}
 
 	/**

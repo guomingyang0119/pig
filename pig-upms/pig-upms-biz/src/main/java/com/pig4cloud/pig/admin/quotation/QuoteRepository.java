@@ -95,6 +95,28 @@ public class QuoteRepository {
 		return rows.isEmpty() ? null : decode(rows.get(0));
 	}
 
+	/** 操作恢复只读归属与版本，不解析整单正文或结果。 */
+	public Map<String,Object> orderIdentity(String id) {
+		var rows=jdbc.queryForList("SELECT id,owner_id,state,revision FROM quote_order WHERE id=?",id);
+		return rows.isEmpty()?null:rows.get(0);
+	}
+
+	/** 保存/试算跨实例争用立即返回，不在连接池中等待另一个长事务。 */
+	public Map<String,Object> orderForOperation(String id) {
+		var rows=jdbc.queryForList("SELECT * FROM quote_order WHERE id=? FOR UPDATE NOWAIT",id);
+		return rows.isEmpty()?null:decode(rows.get(0));
+	}
+
+	/** 请求标识直接使用既有审计主键，避免扫描大审计正文寻找回执。 */
+	public Map<String,Object> operationRecord(String operationId) {
+		var rows=jdbc.queryForList("SELECT actor_id,target,JSON_EXTRACT(detail,'$.operation') AS operation_receipt FROM quote_audit WHERE id=?",operationId);
+		if(rows.isEmpty())return null;
+		var row=new LinkedHashMap<String,Object>();rows.get(0).forEach((key,value)->row.put(key.toLowerCase(Locale.ROOT),value));
+		Object receipt=row.remove("operation_receipt");
+		row.put("operation",receipt==null || str(receipt).equals("null")?obj():object(str(receipt)));
+		return row;
+	}
+
 	/**
 	 * 统一JDBC列名为小写，并将正文、结果及解析快照还原为对象。
 	 * 导出文件的二进制内容不参与JSON转换。
@@ -125,7 +147,7 @@ public class QuoteRepository {
 		String fields = "id,family,kind,version,status";
 		for (String key : List.of("company_id", "effective_from", "effective_to"))
 			fields += ",TRIM(BOTH '\"' FROM JSON_EXTRACT(body,'$." + key + "')) AS " + key;
-		return jdbc.queryForList("SELECT " + fields + " FROM quote_catalog WHERE status IN ('published','retired') ORDER BY created_at DESC,version DESC")
+		return jdbc.queryForList("SELECT " + fields + " FROM quote_catalog WHERE status IN ('published','retired','archived') ORDER BY created_at DESC,version DESC")
 			.stream().map(this::decode).map(row -> {
 				var body = obj();
 				for (String key : List.of("company_id", "effective_from", "effective_to")) {
@@ -214,6 +236,10 @@ public class QuoteRepository {
 
 	/** 编辑事务已持有新正文时直接取差异，避免再次读取并解析完整报价；旧调用仍从数据库取真实提交状态。 */
 	public void audit(QuoteService.Actor actor, String action, String target, Object detail, Map<String, Object> currentBody) {
+		audit(actor,action,target,detail,currentBody,null);
+	}
+
+	void audit(QuoteService.Actor actor, String action, String target, Object detail, Map<String,Object> currentBody, String operationId) {
 		Map<String, Object> payload = new LinkedHashMap<>(map(detail));
 		if (Set.of("edit_quote", "edit_catalog").contains(action) && payload.get("previous_body") instanceof Map) {
 			if (currentBody == null) {
@@ -235,9 +261,13 @@ public class QuoteRepository {
 				payload.put("changes_truncated", parsed.getOrDefault("changes_truncated", false));
 			}
 		}
-		jdbc.update(
-				"INSERT INTO quote_audit(id,actor_id,actor_name,action,target,detail,created_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)",
-				uuid(), actor.id(), actor.name(), action, target, json(payload));
+		try {
+			jdbc.update("INSERT INTO quote_audit(id,actor_id,actor_name,action,target,detail,created_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+					operationId==null?uuid():operationId, actor.id(), actor.name(), action, target, json(payload));
+		} catch(org.springframework.dao.DuplicateKeyException conflict) {
+			if(operationId!=null) throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,"操作标识已被其他请求使用，请核对当前版本后操作");
+			throw conflict;
+		}
 	}
 
 	/** 在提交修改的事务内保存差异，不能在查看日志时把后来状态冒充为当时的新值。 */
